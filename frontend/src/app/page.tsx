@@ -13,13 +13,22 @@ interface IndexedItem {
 }
 
 // Detect if running in Tauri
-const isTauri = typeof window !== "undefined" && "__TAURI__" in window;
+const isTauri = typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
 
 async function invoke<T>(cmd: string, args?: Record<string, unknown>): Promise<T> {
+  console.log("invoke called:", cmd, "isTauri:", isTauri);
   if (isTauri) {
-    const { invoke: tauriInvoke } = await import("@tauri-apps/api/core");
-    return tauriInvoke<T>(cmd, args);
+    try {
+      const { invoke: tauriInvoke } = await import("@tauri-apps/api/core");
+      const result = await tauriInvoke<T>(cmd, args);
+      console.log("Tauri invoke result:", result);
+      return result;
+    } catch (e) {
+      console.error("Tauri invoke error:", e);
+      throw e;
+    }
   }
+  console.log("Not in Tauri, returning empty array");
   return [] as unknown as T;
 }
 
@@ -43,9 +52,11 @@ export default function Home() {
   useEffect(() => {
     async function loadItems() {
       try {
+        console.log("Loading items from Tauri...");
         const result = await invoke<IndexedItem[]>("get_indexed_items");
-        setItems(result);
-        setFiltered(result);
+        console.log("Received items:", result?.length, result);
+        setItems(result || []);
+        setFiltered(result || []);
       } catch (e) {
         console.error("Failed to load items:", e);
       } finally {
