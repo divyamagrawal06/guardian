@@ -180,9 +180,10 @@ class BrowserAgent:
             # Case 1: LLM wants to call tools
             if response.get("tool_calls"):
                 # Add assistant message with tool calls to history
+                # NOTE: content must be "" not None — Gemini rejects null content
                 self.messages.append({
                     "role": "assistant",
-                    "content": response.get("content"),
+                    "content": response.get("content") or "",
                     "tool_calls": response["tool_calls"],
                 })
                 

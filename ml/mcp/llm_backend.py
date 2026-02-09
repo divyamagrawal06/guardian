@@ -309,6 +309,64 @@ class OpenAIBackend(LLMBackend):
             self._client = OpenAI(**kwargs)
         return self._client
     
+    def _is_gemini_model(self) -> bool:
+        """Check if the configured model is a Gemini model (via OpenRouter or similar)."""
+        model_lower = self.cfg.model.lower()
+        return "gemini" in model_lower or "google" in model_lower
+    
+    def _sanitize_messages_for_gemini(
+        self, messages: List[Dict[str, Any]]
+    ) -> List[Dict[str, Any]]:
+        """
+        Convert tool-call message sequences into plain-text messages
+        that Gemini can understand via OpenRouter.
+        
+        Gemini behind OpenRouter does not reliably support the OpenAI
+        tool_calls/tool message format. Instead, we convert:
+          - assistant msg with tool_calls → assistant text describing the call
+          - tool result msg → user text with the result
+        """
+        clean = []
+        for msg in messages:
+            role = msg.get("role")
+            
+            if role == "assistant" and msg.get("tool_calls"):
+                # Convert tool calls to a plain text description
+                parts = []
+                if msg.get("content"):
+                    parts.append(msg["content"])
+                for tc in msg["tool_calls"]:
+                    fn = tc["function"]
+                    parts.append(f"I'll call tool: {fn['name']}({fn['arguments']})")
+                clean.append({"role": "assistant", "content": "\n".join(parts)})
+            
+            elif role == "tool":
+                # Convert tool result into a user message
+                tool_id = msg.get("tool_call_id", "")
+                # Find the function name from previous assistant messages
+                fn_name = "tool"
+                for prev in reversed(clean):
+                    if prev["role"] == "assistant" and "I'll call tool:" in prev.get("content", ""):
+                        import re
+                        match = re.search(r"I'll call tool: (\w+)", prev["content"])
+                        if match:
+                            fn_name = match.group(1)
+                        break
+                content = msg.get("content") or "(no output)"
+                clean.append({
+                    "role": "user",
+                    "content": f"[Tool result from {fn_name}]:\n{content}",
+                })
+            
+            else:
+                # Pass through system, user, and normal assistant messages
+                m = dict(msg)
+                if role == "assistant" and m.get("content") is None:
+                    m["content"] = ""
+                clean.append(m)
+        
+        return clean
+    
     def chat(
         self,
         messages: List[Dict[str, str]],
@@ -317,9 +375,19 @@ class OpenAIBackend(LLMBackend):
     ) -> Dict[str, Any]:
         client = self._get_client()
         
+        # Gemini via OpenRouter doesn't support OpenAI tool message format reliably.
+        # For Gemini models: convert tool interactions to plain text messages.
+        # For true OpenAI models: pass through with native tool support.
+        use_native_tools = not self._is_gemini_model()
+        
+        if use_native_tools:
+            clean_messages = messages
+        else:
+            clean_messages = self._sanitize_messages_for_gemini(messages)
+        
         kwargs = {
             "model": self.cfg.model,
-            "messages": messages,
+            "messages": clean_messages,
             "temperature": temperature or self.cfg.temperature,
             "max_tokens": self.cfg.max_tokens,
         }
