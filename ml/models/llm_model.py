@@ -12,6 +12,7 @@ Handles reasoning and planning:
 from typing import List, Optional, Dict, Any
 from dataclasses import dataclass
 import json
+import re
 from loguru import logger
 
 from config import LLMConfig, config
@@ -183,14 +184,17 @@ Extract WHAT the user wants, not HOW to do it. [/INST]
         
         PIPELINE STEP 2
         """
-        prompt = f"""[INST] You are a task planning system. Create a step-by-step plan for this task.
+        prompt = f"""[INST] You are a task planning system for a Windows desktop agent. Create a step-by-step plan for this task.
 
 Intent:
 - Goal: {intent.goal}
 - App: {intent.app or "unspecified"}
 - Details: {json.dumps(intent.entities)}
 
-Create abstract steps (no coordinates, no UI specifics).
+IMPORTANT RULES:
+- To open any application, ALWAYS use Windows Search: press "win+s", type the app name, then press "enter". Do NOT click taskbar icons.
+- Keep steps atomic and verifiable.
+- Create abstract steps (no coordinates, no UI specifics).
 
 Respond with JSON array only:
 [
@@ -198,7 +202,7 @@ Respond with JSON array only:
     ...
 ]
 
-Keep steps atomic and verifiable. [/INST]
+[/INST]
 """
 
         try:
@@ -221,6 +225,102 @@ Keep steps atomic and verifiable. [/INST]
             logger.error(f"Task planning failed: {e}")
             return []
     
+    def _try_deterministic_action(self, step: TaskStep) -> Optional[PlannedAction]:
+        """
+        Try to determine the action deterministically from the step description.
+        
+        Returns a PlannedAction if the step clearly maps to a key press or type action,
+        otherwise returns None to fall through to LLM-based planning.
+        """
+        desc = (step.action + " " + step.description).lower()
+        
+        # --- Key press patterns ---
+        # Match "press <combo>" greedily, then try to normalize the captured key.
+        # We try multiple extraction strategies from most specific to least.
+        
+        # First: look for explicit key combos with + sign  e.g. "press windows key + s"
+        m = re.search(r'(?:press|hit)\s+(.+?\+\s*\S+)', desc)
+        if m:
+            raw_key = m.group(1).strip().rstrip('.')
+            key = self._normalize_key(raw_key)
+            if key:
+                return PlannedAction(action_type="key", key=key, confidence=0.95)
+        
+        # Second: "press <known_key_word>" — match known single keys
+        m = re.search(r'(?:press|hit)\s+(?:the\s+)?(\S+)', desc)
+        if m:
+            raw_key = m.group(1).strip().rstrip('.')
+            key = self._normalize_key(raw_key)
+            if key:
+                return PlannedAction(action_type="key", key=key, confidence=0.95)
+        
+        # --- Type patterns ---
+        # "type 'notepad'", "type \"hello world\"", "type notepad in search"
+        type_patterns = [
+            r"""type\s+['"](.+?)['"]""",          # type 'notepad' or type "notepad"
+            r"type\s+(\S+)\s+in\s+",              # type notepad in search
+        ]
+        
+        for pattern in type_patterns:
+            m = re.search(pattern, desc)
+            if m:
+                text = m.group(1).strip()
+                if text:
+                    return PlannedAction(action_type="type", text=text, confidence=0.95)
+        
+        return None
+    
+    @staticmethod
+    def _normalize_key(raw: str) -> Optional[str]:
+        """Normalize a raw key description to a pyautogui-compatible key string."""
+        raw = raw.lower().strip()
+        
+        # Common key combo normalizations
+        replacements = {
+            "windows key + s": "win+s",
+            "windows key+s": "win+s",
+            "win key + s": "win+s",
+            "windows + s": "win+s",
+            "win + s": "win+s",
+            "windows key": "win",
+            "win key": "win",
+            "enter key": "enter",
+            "enter": "enter",
+            "return": "enter",
+            "escape": "esc",
+            "esc": "esc",
+            "tab": "tab",
+            "space": "space",
+            "backspace": "backspace",
+            "delete": "delete",
+            "ctrl+c": "ctrl+c",
+            "ctrl+v": "ctrl+v",
+            "ctrl+a": "ctrl+a",
+            "ctrl+s": "ctrl+s",
+            "ctrl+z": "ctrl+z",
+            "alt+f4": "alt+f4",
+            "alt+tab": "alt+tab",
+        }
+        
+        # Direct match
+        if raw in replacements:
+            return replacements[raw]
+        
+        # Try normalizing separators: "ctrl + c" -> "ctrl+c"
+        normalized = re.sub(r'\s*\+\s*', '+', raw)
+        if normalized in replacements:
+            return replacements[normalized]
+        
+        # If it looks like a key combo (contains +), return as-is
+        if '+' in normalized and len(normalized) < 20:
+            return normalized
+        
+        # Single word keys
+        if len(raw.split()) == 1 and len(raw) < 15:
+            return raw
+        
+        return None
+    
     def plan_action(
         self, 
         screen_description: str,
@@ -233,27 +333,44 @@ Keep steps atomic and verifiable. [/INST]
         
         PIPELINE STEP 7
         """
-        elements_str = json.dumps(available_elements, indent=2)
+        # --- Deterministic override for key/type steps ---
+        # The LLM often ignores instructions to use "key" actions, so we detect
+        # common patterns in the step description and return the action directly.
+        override = self._try_deterministic_action(current_step)
+        if override:
+            logger.info(f"Deterministic action override: {override.action_type} (key={override.key}, text={override.text})")
+            return override
+        
+        # --- LLM-based planning for click/scroll/complex actions ---
+        # Limit elements to top 30 by confidence to avoid prompt bloat
+        top_elements = sorted(available_elements, key=lambda e: e.get("confidence", 0), reverse=True)[:30]
+        elements_str = json.dumps(top_elements, indent=2)
         history_str = "\n".join(history) if history else "None"
         
-        prompt = f"""[INST] You are an action planning system. Decide ONE atomic action to perform.
+        prompt = f"""[INST] You are an action planning system for a Windows desktop agent. Decide ONE atomic action.
 
 Current task step: {current_step.action} - {current_step.description}
 
 Screen state: {screen_description}
 
-Available UI elements:
+Top UI elements on screen:
 {elements_str}
 
 Previous actions: {history_str}
 
-Choose ONE action. Respond with JSON only:
+CRITICAL RULES:
+- If the step says "press" a key or key combo (e.g. "Win+S", "Enter", "Ctrl+C"), use action_type "key" with the key field. Example: {{"action_type":"key","key":"win+s"}}
+- If the step says "type" text, use action_type "type" with the text field. Example: {{"action_type":"type","text":"notepad"}}
+- Only use action_type "click" if you need to click a SPECIFIC element that EXISTS in the UI elements list above. NEVER invent element names.
+- For target_text, use EXACT text from the elements list. Do not guess or hallucinate text.
+
+Respond with JSON only:
 {{
     "action_type": "click|type|key|scroll|wait",
-    "target_role": "role of element to interact with or null",
-    "target_text": "visible text on element or null",
+    "target_role": "role from elements list or null",
+    "target_text": "exact text from elements list or null",
     "text": "text to type or null",
-    "key": "key to press or null",
+    "key": "key combo to press or null",
     "direction": "up|down|left|right or null",
     "confidence": 0.0-1.0,
     "reasoning": "brief explanation"

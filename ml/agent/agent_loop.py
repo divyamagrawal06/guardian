@@ -4,14 +4,17 @@ ATLAS ML Pipeline - Agent Loop
 Main agent loop: PERCEIVE → UNDERSTAND → PLAN → ACT → VERIFY → repeat
 """
 
-from typing import Optional
+from typing import Optional, List, Dict, Any
+import time
 from loguru import logger
 
 from models import LLMModel
 from perception import PerceptionEngine
-from actions import ActionExecutor, ClickAction, TypeAction, KeyAction, ScrollAction
+from actions import ActionExecutor, ClickAction, TypeAction, KeyAction, ScrollAction, WaitAction
 from agent.state import AgentState, AgentStatus
 from agent.verification import Verifier
+from memory import Memory
+from memory.memory import PatternRecord
 from config import config
 
 
@@ -26,9 +29,10 @@ class AgentLoop:
     
     def __init__(self):
         self.llm = LLMModel()
-        self.perception = PerceptionEngine()
+        self.perception = PerceptionEngine(enable_vlm=config.vlm.use_vlm)
         self.executor = ActionExecutor()
         self.verifier = Verifier(self.perception)
+        self.memory = Memory()
         self.state = AgentState()
         self._initialized = False
         
@@ -41,7 +45,7 @@ class AgentLoop:
         # Initialize perception (starts with OCR)
         self.perception.initialize_ocr()
         if config.vlm.use_vlm:
-             self.perception.initialize_vlm()
+            self.perception.initialize_vlm()
              
         self._initialized = True
         logger.info("Agent ready")
@@ -83,20 +87,20 @@ class AgentLoop:
                 success = self._execute_step()
                 
                 if not success:
-                    if self.state.can_retry:
-                        self.state.retry_count += 1
-                        self.state.status = AgentStatus.RETRYING
-                        logger.warning(f"Retrying step {self.state.current_step.step_number} (attempt {self.state.retry_count})")
-                        # Add a small delay and potentially re-perceive/re-plan in next iteration
-                        import time
-                        time.sleep(1.0)
-                        # Reset status to RUNNING to continue loop
-                        self.state.status = AgentStatus.RUNNING
+                    recovery = self._handle_failure()
+                    if recovery == "retry":
                         continue
-                    else:
+                    elif recovery == "skip":
+                        self.state.retry_count = 0
+                        self.state.advance_step()
+                        continue
+                    else:  # abort
                         self.state.status = AgentStatus.FAILED
-                        logger.error("Max retries exceeded")
+                        logger.error("Task aborted after failure")
                         return False
+                
+                # Store successful pattern in memory
+                self._store_success_pattern()
                 
                 # Reset retry count on success
                 self.state.retry_count = 0
@@ -120,8 +124,9 @@ class AgentLoop:
             
         logger.info(f"Executing Step {step.step_number}: {step.description}")
         
-        # STEP 3-6: Perceive
-        # Use quick_perceive by default for speed, unless VLM is strictly required
+        # STEP 3-6: Perceive (OCR-only for speed and reliability)
+        # VLM detect_ui_elements returns unreliable bboxes and takes ~60s per call.
+        # OCR-only path is fast (~5s) and gives accurate text+bbox data.
         self.state.perception = self.perception.quick_perceive()
         
         # Log detected elements count
@@ -140,14 +145,23 @@ class AgentLoop:
         self.state.current_action = planned
         logger.info(f"Planned action: {planned.action_type} on {planned.target_text or planned.target_role or 'screen'}")
         
+        # Boost confidence from memory
+        if self.state.intent and self.state.intent.app:
+            boost = self.memory.get_confidence_boost(
+                self.state.intent.app, 
+                planned.target_role or "",
+                planned.target_text
+            )
+            if boost > 0:
+                planned.confidence = min(1.0, planned.confidence + boost)
+                logger.debug(f"Memory confidence boost: +{boost:.2f} -> {planned.confidence:.2f}")
+        
         if planned.confidence < 0.3:
             logger.warning(f"Low confidence action: {planned.confidence}")
         
         # STEP 8: Resolve coordinates
         action = self._resolve_action(planned)
         if action is None:
-            # If action resolution failed, it might be because the element wasn't found.
-            # We could try to fallback or just fail.
             logger.error(f"Failed to resolve action coordinates for {planned.target_text or planned.target_role}")
             return False
         
@@ -164,7 +178,6 @@ class AgentLoop:
             return False
         
         # STEP 10: Verify
-        # Verify will capture the 'after' state automatically if we don't pass it
         verification = self.verifier.verify(planned, before)
         
         logger.info(f"Verification: {'PASSED' if verification.passed else 'FAILED'} ({verification.confidence:.2f}) - {verification.reason}")
@@ -173,7 +186,6 @@ class AgentLoop:
                                  None if verification.passed else verification.reason)
         
         if not verification.passed:
-            # If verification failed, we return False to trigger retry logic in run()
             return False
             
         return True
@@ -194,7 +206,20 @@ class AgentLoop:
         
         # 3. Try role match if no text target or text match failed
         if not target and planned.target_role:
-             target = self.state.perception.get_element_by_role(planned.target_role)
+            target = self.state.perception.get_element_by_role(planned.target_role)
+        
+        # 4. If multiple candidates, use LLM to rank them
+        if not target and planned.target_text:
+            candidates = self.state.perception.get_all_by_text(planned.target_text, fuzzy=True)
+            if len(candidates) > 1:
+                ranked = self.llm.rank_candidates(
+                    [c.to_dict() for c in candidates],
+                    planned.target_text
+                )
+                if ranked and ranked[0].get("relevance_score", 0) > 0.5:
+                    # Use the top-ranked candidate
+                    target = candidates[0]  # Already sorted by relevance
+                    logger.debug(f"LLM ranked candidate: {target.text}")
         
         # Debug log result
         if target:
@@ -226,12 +251,91 @@ class AgentLoop:
                                 confidence=planned.confidence)
         
         elif planned.action_type == "wait":
-             from actions import WaitAction
-             return WaitAction(duration=1.0)
+            return WaitAction(duration=1.0)
         
         return None
+    
+    def _handle_failure(self) -> str:
+        """
+        Handle a failed step using LLM-guided error recovery.
+        
+        Returns:
+            "retry" - retry the same step
+            "skip" - skip to next step
+            "abort" - stop the task
+        """
+        if not self.state.can_retry:
+            logger.error("Max retries exceeded")
+            return "abort"
+        
+        self.state.retry_count += 1
+        self.state.status = AgentStatus.RETRYING
+        
+        step = self.state.current_step
+        last_action = self.state.current_action
+        last_error = self.state.last_error or "Verification failed"
+        
+        # Get the last action record's error if available
+        if self.state.action_history:
+            last_record = self.state.action_history[-1]
+            if last_record.error:
+                last_error = last_record.error
+        
+        logger.warning(f"Step {step.step_number} failed (attempt {self.state.retry_count}): {last_error}")
+        
+        # Ask LLM for recovery strategy
+        try:
+            screen_desc = ""
+            if self.state.perception:
+                screen_desc = self.state.perception.screen_description or f"Screen with {len(self.state.perception.fused_elements)} elements"
+            
+            recovery = self.llm.handle_error(
+                error_description=last_error,
+                screen_state=screen_desc,
+                last_action=last_action,
+                retry_count=self.state.retry_count
+            )
+            
+            strategy = recovery.get("strategy", "retry")
+            reason = recovery.get("reason", "")
+            logger.info(f"LLM recovery strategy: {strategy} - {reason}")
+            
+            if strategy == "abort":
+                return "abort"
+            elif strategy == "skip":
+                return "skip"
+            else:
+                # retry or replan — both result in re-executing the step
+                time.sleep(1.0)
+                self.state.status = AgentStatus.RUNNING
+                return "retry"
+                
+        except Exception as e:
+            logger.warning(f"LLM error recovery failed, defaulting to retry: {e}")
+            time.sleep(1.0)
+            self.state.status = AgentStatus.RUNNING
+            return "retry"
+    
+    def _store_success_pattern(self) -> None:
+        """Store successful action pattern in memory for future confidence boosting."""
+        try:
+            action = self.state.current_action
+            if not action or not self.state.intent:
+                return
+            
+            app_name = self.state.intent.app or "unknown"
+            self.memory.store(PatternRecord(
+                app_name=app_name,
+                element_role=action.target_role or "unknown",
+                element_text=action.target_text,
+                bbox_relative=list(self.state.perception.fused_elements[0].bbox_normalized) if self.state.perception and self.state.perception.fused_elements else [0, 0, 0, 0],
+                action_type=action.action_type
+            ))
+        except Exception as e:
+            logger.debug(f"Failed to store pattern (non-critical): {e}")
     
     def stop(self) -> None:
         """Stop the agent."""
         self.state.status = AgentStatus.IDLE
+        self.memory.close()
         logger.info("Agent stopped")

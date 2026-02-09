@@ -87,7 +87,7 @@ class AgentState:
     
     def get_recent_actions(self, n: int = 5) -> List[str]:
         """Get descriptions of recent actions."""
-        return [f"{r.action.action_type}: {'✓' if r.verification_passed else '✗'}" 
+        return [f"{r.action.action_type}: {'OK' if r.verification_passed else 'FAIL'}" 
                 for r in self.action_history[-n:]]
     
     def reset(self) -> None:
