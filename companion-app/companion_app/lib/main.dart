@@ -53,6 +53,14 @@ class AtlasHome extends StatelessWidget {
       body: Stack(
         fit: StackFit.expand,
         children: [
+          // 1. Background Layer
+          Positioned.fill(
+            child: Image.asset(
+              'assets/bg.png',
+              fit: BoxFit.cover,
+              filterQuality: FilterQuality.none,
+            ),
+          ),
           // 2. Content Layer
           SafeArea(
             child: Padding(
@@ -111,7 +119,7 @@ class AtlasHome extends StatelessWidget {
                         ),
                         // The Owl sitting on top
                         Positioned(
-                          top: 0,
+                          top: -12, // Move owl slightly upwards
                           child: PixelArt(
                             asset: 'assets/owl.png',
                             height: 55,

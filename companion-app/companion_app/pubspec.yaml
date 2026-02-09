@@ -59,6 +59,7 @@ flutter:
   uses-material-design: true
 
   assets:
+    - assets/bg.png
     - assets/owl.png
     - assets/search_box.png
     - assets/search_icon.png
