@@ -4,7 +4,8 @@
 # MCP protocol
 mcp[cli]>=1.0.0
 
-# LLM backends (modular — use either or both)
+# LLM backends (modular — use any combination)
+google-genai>=1.0.0      # Gemini API (primary)
 openai>=1.30.0           # OpenAI / any OpenAI-compatible API
 llama-cpp-python>=0.2.0  # Local models (optional, for offline)
 

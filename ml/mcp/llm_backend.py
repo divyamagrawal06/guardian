@@ -2,9 +2,10 @@
 ATLAS MCP Agent — Modular LLM Backend
 ======================================
 
-Provides a unified interface for LLM calls with two backends:
-  1. OpenAI-compatible API (works with OpenAI, Groq, Together, Ollama, etc.)
-  2. Local llama-cpp-python (fully offline)
+Provides a unified interface for LLM calls with three backends:
+  1. Google Gemini API (native SDK — primary)
+  2. OpenAI-compatible API (works with OpenAI, Groq, Together, Ollama, etc.)
+  3. Local llama-cpp-python (fully offline)
 
 Usage:
     from llm_backend import create_llm
@@ -14,11 +15,12 @@ Usage:
 
 from __future__ import annotations
 import json
+import uuid
 from abc import ABC, abstractmethod
 from typing import List, Dict, Any, Optional
 from rich.console import Console
 
-from config import MCPConfig, OpenAIConfig, LlamaConfig
+from config import MCPConfig, GeminiConfig, OpenAIConfig, LlamaConfig
 
 console = Console()
 
@@ -47,6 +49,207 @@ class LLMBackend(ABC):
     def name(self) -> str:
         """Human-readable backend name."""
         ...
+
+
+# ─── Gemini Backend (Native SDK) ──────────────────────────────────────────────
+
+class GeminiBackend(LLMBackend):
+    """Google Gemini API backend using the native google-genai SDK."""
+    
+    def __init__(self, cfg: GeminiConfig):
+        self.cfg = cfg
+        self._client = None
+    
+    def _get_client(self):
+        if self._client is None:
+            try:
+                from google import genai
+            except ImportError:
+                raise RuntimeError(
+                    "google-genai is not installed.\n"
+                    "Install it with: pip install google-genai"
+                )
+            self._client = genai.Client(api_key=self.cfg.api_key)
+        return self._client
+    
+    def _openai_tools_to_gemini_declarations(
+        self, tools: List[Dict[str, Any]]
+    ) -> list:
+        """Convert OpenAI-format tool schemas to Gemini function declarations."""
+        from google.genai import types
+        
+        declarations = []
+        for tool in tools:
+            fn = tool["function"]
+            params = fn.get("parameters", {})
+            
+            # Clean up schema for Gemini — it's stricter about JSON Schema
+            clean_params = self._clean_schema_for_gemini(params)
+            
+            declarations.append(types.FunctionDeclaration(
+                name=fn["name"],
+                description=fn.get("description", ""),
+                parameters=clean_params if clean_params.get("properties") else None,
+            ))
+        return declarations
+    
+    def _clean_schema_for_gemini(self, schema: dict) -> dict:
+        """Clean a JSON Schema dict to be Gemini-compatible."""
+        cleaned = {}
+        if "type" in schema:
+            cleaned["type"] = schema["type"].upper() if schema["type"] in ("string", "number", "integer", "boolean", "array", "object") else schema["type"]
+        if "properties" in schema:
+            cleaned["properties"] = {}
+            for k, v in schema["properties"].items():
+                cleaned["properties"][k] = self._clean_schema_for_gemini(v)
+        if "required" in schema:
+            cleaned["required"] = schema["required"]
+        if "description" in schema:
+            cleaned["description"] = schema["description"]
+        if "items" in schema:
+            cleaned["items"] = self._clean_schema_for_gemini(schema["items"])
+        if "enum" in schema:
+            cleaned["enum"] = schema["enum"]
+        return cleaned
+    
+    def _build_contents(self, messages: List[Dict[str, Any]]) -> tuple:
+        """Convert OpenAI-style messages to Gemini contents + system instruction."""
+        from google.genai import types
+        
+        system_instruction = None
+        contents = []
+        
+        for msg in messages:
+            role = msg["role"]
+            
+            if role == "system":
+                system_instruction = msg["content"]
+                continue
+            
+            if role == "assistant":
+                parts = []
+                if msg.get("content"):
+                    parts.append(types.Part.from_text(text=msg["content"]))
+                # Re-create function call parts for history
+                if msg.get("tool_calls"):
+                    for tc in msg["tool_calls"]:
+                        fn = tc["function"]
+                        args = json.loads(fn["arguments"]) if isinstance(fn["arguments"], str) else fn["arguments"]
+                        parts.append(types.Part.from_function_call(
+                            name=fn["name"],
+                            args=args,
+                        ))
+                if parts:
+                    contents.append(types.Content(role="model", parts=parts))
+                continue
+            
+            if role == "tool":
+                # Gemini expects function responses as "user" role content
+                tool_call_id = msg.get("tool_call_id", "")
+                # Find the function name from the previous assistant message
+                fn_name = self._find_fn_name_for_tool_call(messages, tool_call_id)
+                try:
+                    result_data = json.loads(msg["content"])
+                except (json.JSONDecodeError, TypeError):
+                    result_data = {"result": msg.get("content", "")}
+                
+                contents.append(types.Content(
+                    role="user",
+                    parts=[types.Part.from_function_response(
+                        name=fn_name,
+                        response=result_data,
+                    )],
+                ))
+                continue
+            
+            if role == "user":
+                contents.append(types.Content(
+                    role="user",
+                    parts=[types.Part.from_text(text=msg.get("content", ""))],
+                ))
+                continue
+        
+        return contents, system_instruction
+    
+    def _find_fn_name_for_tool_call(
+        self, messages: List[Dict[str, Any]], tool_call_id: str
+    ) -> str:
+        """Look back through messages to find the function name for a tool_call_id."""
+        for msg in reversed(messages):
+            if msg.get("tool_calls"):
+                for tc in msg["tool_calls"]:
+                    if tc.get("id") == tool_call_id:
+                        return tc["function"]["name"]
+        return "unknown_function"
+    
+    def chat(
+        self,
+        messages: List[Dict[str, Any]],
+        tools: Optional[List[Dict[str, Any]]] = None,
+        temperature: Optional[float] = None,
+    ) -> Dict[str, Any]:
+        from google.genai import types
+        
+        client = self._get_client()
+        contents, system_instruction = self._build_contents(messages)
+        
+        # Build config
+        gen_config = types.GenerateContentConfig(
+            temperature=temperature or self.cfg.temperature,
+            max_output_tokens=self.cfg.max_output_tokens,
+        )
+        if system_instruction:
+            gen_config.system_instruction = system_instruction
+        
+        # Add tools if provided
+        if tools:
+            declarations = self._openai_tools_to_gemini_declarations(tools)
+            gen_config.tools = [types.Tool(function_declarations=declarations)]
+        
+        response = client.models.generate_content(
+            model=self.cfg.model,
+            contents=contents,
+            config=gen_config,
+        )
+        
+        # Parse response
+        result = {
+            "role": "assistant",
+            "content": None,
+            "tool_calls": None,
+        }
+        
+        if not response.candidates:
+            result["content"] = "No response generated."
+            return result
+        
+        candidate = response.candidates[0]
+        text_parts = []
+        tool_calls = []
+        
+        for part in candidate.content.parts:
+            if part.text:
+                text_parts.append(part.text)
+            elif part.function_call:
+                fc = part.function_call
+                tool_calls.append({
+                    "id": f"gemini_{uuid.uuid4().hex[:8]}",
+                    "function": {
+                        "name": fc.name,
+                        "arguments": json.dumps(dict(fc.args) if fc.args else {}),
+                    },
+                })
+        
+        if text_parts:
+            result["content"] = "\n".join(text_parts)
+        
+        if tool_calls:
+            result["tool_calls"] = tool_calls
+        
+        return result
+    
+    def name(self) -> str:
+        return f"Gemini ({self.cfg.model})"
 
 
 class OpenAIBackend(LLMBackend):
@@ -235,7 +438,14 @@ class LlamaBackend(LLMBackend):
 
 def create_llm(config: MCPConfig) -> LLMBackend:
     """Factory: create the right LLM backend based on config."""
-    if config.llm_backend == "openai":
+    if config.llm_backend == "gemini":
+        if not config.gemini.api_key:
+            raise ValueError(
+                "LLM_BACKEND=gemini but GEMINI_API_KEY is not set.\n"
+                "Set it in ml/mcp/.env or as an environment variable."
+            )
+        return GeminiBackend(config.gemini)
+    elif config.llm_backend == "openai":
         if not config.openai.api_key:
             raise ValueError(
                 "LLM_BACKEND=openai but OPENAI_API_KEY is not set.\n"

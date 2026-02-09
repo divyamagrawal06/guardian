@@ -45,7 +45,11 @@ def print_banner():
 
 def print_config(cfg):
     console.print(f"  [cyan]LLM Backend:[/cyan]  {cfg.llm_backend}")
-    if cfg.llm_backend == "openai":
+    if cfg.llm_backend == "gemini":
+        console.print(f"  [cyan]Model:[/cyan]        {cfg.gemini.model}")
+        key_preview = cfg.gemini.api_key[:8] + "..." if cfg.gemini.api_key else "(not set)"
+        console.print(f"  [cyan]API Key:[/cyan]      {key_preview}")
+    elif cfg.llm_backend == "openai":
         console.print(f"  [cyan]Model:[/cyan]        {cfg.openai.model}")
         console.print(f"  [cyan]Base URL:[/cyan]     {cfg.openai.base_url or 'https://api.openai.com/v1'}")
         key_preview = cfg.openai.api_key[:8] + "..." if cfg.openai.api_key else "(not set)"

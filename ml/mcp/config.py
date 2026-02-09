@@ -3,11 +3,12 @@ ATLAS MCP Agent — Configuration
 ================================
 
 Loads settings from environment variables or .env file.
-Supports two LLM backends:
-  1. OpenAI-compatible API (OpenAI, Groq, Together, local vLLM/Ollama, etc.)
-  2. Local llama.cpp model (fully offline)
+Supports three LLM backends:
+  1. Gemini API (Google's Generative AI — primary)
+  2. OpenAI-compatible API (OpenAI, Groq, Together, local vLLM/Ollama, etc.)
+  3. Local llama.cpp model (fully offline)
 
-Set LLM_BACKEND=openai or LLM_BACKEND=llama in your .env file.
+Set LLM_BACKEND=gemini, openai, or llama in your .env file.
 """
 
 import os
@@ -19,6 +20,14 @@ from dotenv import load_dotenv
 # Load .env from the mcp folder itself
 _env_path = Path(__file__).parent / ".env"
 load_dotenv(_env_path)
+
+
+class GeminiConfig(BaseModel):
+    """Config for Google Gemini API backend."""
+    api_key: str = Field(default_factory=lambda: os.getenv("GEMINI_API_KEY", ""))
+    model: str = Field(default_factory=lambda: os.getenv("GEMINI_MODEL", "gemini-2.0-flash"))
+    temperature: float = 0.3
+    max_output_tokens: int = 8192
 
 
 class OpenAIConfig(BaseModel):
@@ -46,9 +55,10 @@ class LlamaConfig(BaseModel):
 
 class MCPConfig(BaseModel):
     """Master config for the MCP agent."""
-    llm_backend: Literal["openai", "llama"] = Field(
-        default_factory=lambda: os.getenv("LLM_BACKEND", "openai")
+    llm_backend: Literal["gemini", "openai", "llama"] = Field(
+        default_factory=lambda: os.getenv("LLM_BACKEND", "gemini")
     )
+    gemini: GeminiConfig = Field(default_factory=GeminiConfig)
     openai: OpenAIConfig = Field(default_factory=OpenAIConfig)
     llama: LlamaConfig = Field(default_factory=LlamaConfig)
     
