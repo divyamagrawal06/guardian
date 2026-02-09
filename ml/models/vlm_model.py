@@ -62,86 +62,58 @@ class VLMModel:
         self._processor = None
         
     def load(self) -> None:
-        """Initialize the LLaVA model with quantization."""
-        try:
-            from transformers import (
-                LlavaNextProcessor, 
-                LlavaNextForConditionalGeneration,
-                BitsAndBytesConfig
-            )
-            import torch
+        """Initialize the VLM model."""
+        if self.config.backend == "ollama":
+            # Ollama manages models internally
+            logger.info(f"VLM using Ollama backend: {self.config.ollama_model}")
+            self._model = "ollama"  # unique marker
+            return
+
+        # Fallback to transformers (or others) could go here...
+        logger.warning(f"Backend {self.config.backend} not fully implemented in load()")
+        self._model = None
             
-            # Configure quantization
-            if self.config.quantization == "4bit":
-                quantization_config = BitsAndBytesConfig(
-                    load_in_4bit=True,
-                    bnb_4bit_compute_dtype=torch.float16
-                )
-            elif self.config.quantization == "8bit":
-                quantization_config = BitsAndBytesConfig(load_in_8bit=True)
-            else:
-                quantization_config = None
-            
-            self._processor = LlavaNextProcessor.from_pretrained(
-                self.config.model_name
-            )
-            
-            self._model = LlavaNextForConditionalGeneration.from_pretrained(
-                self.config.model_name,
-                quantization_config=quantization_config,
-                device_map="auto",
-                torch_dtype=torch.float16,
-            )
-            
-            logger.info(f"LLaVA model loaded: {self.config.model_name}")
-            
-        except Exception as e:
-            logger.error(f"Failed to load LLaVA: {e}")
-            raise
-    
     def _query(self, image: Image.Image, prompt: str) -> str:
         """Run a query against the VLM."""
         if self._model is None:
             self.load()
             
-        import torch
-        
-        # Format prompt for LLaVA
-        conversation = [
-            {
-                "role": "user",
-                "content": [
-                    {"type": "image"},
-                    {"type": "text", "text": prompt}
-                ]
-            }
-        ]
-        
-        formatted_prompt = self._processor.apply_chat_template(
-            conversation, add_generation_prompt=True
-        )
-        
-        inputs = self._processor(
-            images=image, 
-            text=formatted_prompt, 
-            return_tensors="pt"
-        ).to(self._model.device)
-        
-        with torch.no_grad():
-            output = self._model.generate(
-                **inputs,
-                max_new_tokens=self.config.max_new_tokens,
-                temperature=self.config.temperature,
-                do_sample=True,
-            )
-        
-        response = self._processor.decode(output[0], skip_special_tokens=True)
-        
-        # Extract just the assistant's response
-        if "ASSISTANT:" in response:
-            response = response.split("ASSISTANT:")[-1].strip()
+        if self.config.backend == "ollama":
+            import requests
+            import base64
+            from io import BytesIO
             
-        return response
+            # Convert image to base64
+            buffered = BytesIO()
+            image.save(buffered, format="PNG")
+            img_str = base64.b64encode(buffered.getvalue()).decode("utf-8")
+            
+            logger.debug(f"Ollama VLM Prompt: {prompt}")
+            
+            try:
+                response = requests.post(
+                    f"{config.ollama.base_url}/api/generate",
+                    json={
+                        "model": self.config.ollama_model,
+                        "prompt": prompt,
+                        "images": [img_str],
+                        "stream": False,
+                        "options": {
+                            "temperature": self.config.temperature,
+                            "num_predict": self.config.max_new_tokens
+                        }
+                    },
+                    timeout=config.ollama.timeout
+                )
+                response.raise_for_status()
+                result = response.json()["response"].strip()
+                logger.debug(f"Ollama VLM Output: {result}")
+                return result
+            except Exception as e:
+                logger.error(f"Ollama VLM query failed: {e}")
+                return ""
+        
+        return ""
     
     def detect_ui_elements(self, image: np.ndarray) -> List[UIRegion]:
         """

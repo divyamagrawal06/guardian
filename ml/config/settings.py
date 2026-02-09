@@ -26,10 +26,11 @@ class OllamaConfig(BaseModel):
 
 class VLMConfig(BaseModel):
     """Vision-Language Model configuration."""
-    backend: Literal["ollama", "transformers"] = "ollama"
+    use_vlm: bool = True  # Enable VLM
+    backend: Literal["ollama", "transformers", "llama_cpp"] = "ollama"
     
     # Ollama settings
-    ollama_model: str = "llava:7b"  # or "llava:13b", "bakllava"
+    ollama_model: str = "llava"  # User has 'llava:latest'
     
     # Transformers settings (fallback)
     hf_model_name: str = "llava-hf/llava-1.5-7b-hf"
@@ -45,7 +46,7 @@ class LLMConfig(BaseModel):
     backend: Literal["ollama", "llama_cpp"] = "ollama"
     
     # Ollama settings
-    ollama_model: str = "mistral:7b"  # or "phi3", "llama3", etc.
+    ollama_model: str = "llama3.2"  # User has 'llama3.2:latest'
     
     # llama.cpp settings (fallback)
     model_path: str = "./models/downloads/tinyllama-1.1b-chat-v1.0.Q4_K_M.gguf"
