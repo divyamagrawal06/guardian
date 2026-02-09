@@ -10,7 +10,7 @@ from dataclasses import dataclass
 import numpy as np
 from loguru import logger
 
-from models import OCRModel, VLMModel
+from models import OCRModel
 from perception.screen_capture import ScreenCapture, ScreenFrame
 from perception.bbox_fusion import BoundingBoxFusion, FusedElement
 
@@ -38,36 +38,77 @@ class PerceptionResult:
                 elif e.text.lower() == text.lower():
                     return e
         return None
+    
+    def get_all_by_role(self, role: str) -> List[FusedElement]:
+        """Get all elements with specified role."""
+        return [e for e in self.fused_elements if e.role == role]
+    
+    def get_all_by_text(self, text: str, fuzzy: bool = True) -> List[FusedElement]:
+        """Get all elements matching text."""
+        matches = []
+        text_lower = text.lower()
+        for e in self.fused_elements:
+            if e.text:
+                if fuzzy and text_lower in e.text.lower():
+                    matches.append(e)
+                elif e.text.lower() == text_lower:
+                    matches.append(e)
+        return matches
 
 
 class PerceptionEngine:
     """
     Complete perception pipeline combining screen capture, OCR, VLM, and fusion.
     
+    VLM is optional and can be skipped for speed in quick_perceive().
+    
     Usage:
         engine = PerceptionEngine()
-        result = engine.perceive()
+        result = engine.quick_perceive()  # Fast, OCR only
         element = result.get_element_by_text("Search")
     """
     
-    def __init__(self):
+    def __init__(self, enable_vlm: bool = False):
+        """
+        Initialize perception engine.
+        
+        Args:
+            enable_vlm: If True, load VLM model (slow, requires GPU).
+                        If False (default), use OCR only.
+        """
         self.screen_capture = ScreenCapture()
         self.ocr = OCRModel()
-        self.vlm = VLMModel()
+        self.vlm = None  # Lazy load if needed
         self.fusion = BoundingBoxFusion()
-        self._initialized = False
+        self._ocr_initialized = False
+        self._vlm_initialized = False
+        self._enable_vlm = enable_vlm
         
-    def initialize(self) -> None:
-        """Load all models. Call once at startup."""
-        if self._initialized:
+    def initialize_ocr(self) -> None:
+        """Load OCR model. Called automatically."""
+        if self._ocr_initialized:
             return
-        logger.info("Initializing perception engine...")
+        logger.info("Loading OCR model...")
         self.ocr.load()
-        self.vlm.load()
-        self._initialized = True
-        logger.info("Perception engine ready")
+        self._ocr_initialized = True
+        logger.info("OCR ready")
+    
+    def initialize_vlm(self) -> None:
+        """Load VLM model (optional, slow)."""
+        if self._vlm_initialized:
+            return
+        try:
+            from models import VLMModel
+            logger.info("Loading VLM model (this may take a while)...")
+            self.vlm = VLMModel()
+            self.vlm.load()
+            self._vlm_initialized = True
+            logger.info("VLM ready")
+        except Exception as e:
+            logger.warning(f"VLM load failed (continuing without VLM): {e}")
+            self._vlm_initialized = False
         
-    def perceive(self, monitor: Optional[int] = None, use_vlm: bool = True) -> PerceptionResult:
+    def perceive(self, monitor: Optional[int] = None, use_vlm: bool = False) -> PerceptionResult:
         """
         Run complete perception pipeline.
         
@@ -75,8 +116,13 @@ class PerceptionEngine:
             monitor: Monitor to capture (None for default)
             use_vlm: Whether to run VLM (can skip for speed)
         """
-        if not self._initialized:
-            self.initialize()
+        # Initialize OCR on first use
+        if not self._ocr_initialized:
+            self.initialize_ocr()
+        
+        # Initialize VLM if requested and enabled
+        if use_vlm and self._enable_vlm and not self._vlm_initialized:
+            self.initialize_vlm()
         
         # Step 3: Screen capture
         frame = self.screen_capture.grab(monitor)
@@ -90,11 +136,14 @@ class PerceptionEngine:
         # Step 5: VLM (optional)
         vlm_regions = []
         screen_description = ""
-        if use_vlm:
-            vlm_raw = self.vlm.detect_ui_elements(frame.image)
-            vlm_regions = [{"role": r.role, "description": r.description,
-                           "bbox_normalized": r.bbox_normalized, "confidence": r.confidence} for r in vlm_raw]
-            screen_description = self.vlm.describe_screen(frame.image)
+        if use_vlm and self._vlm_initialized and self.vlm is not None:
+            try:
+                vlm_raw = self.vlm.detect_ui_elements(frame.image)
+                vlm_regions = [{"role": r.role, "description": r.description,
+                               "bbox_normalized": r.bbox_normalized, "confidence": r.confidence} for r in vlm_raw]
+                screen_description = self.vlm.describe_screen(frame.image)
+            except Exception as e:
+                logger.warning(f"VLM failed, continuing without: {e}")
         
         # Step 6: Fusion
         fused = self.fusion.fuse(ocr_results, vlm_regions, frame.width, frame.height, frame.image)
@@ -107,3 +156,9 @@ class PerceptionEngine:
     def quick_perceive(self, monitor: Optional[int] = None) -> PerceptionResult:
         """Fast perception using only OCR (no VLM)."""
         return self.perceive(monitor, use_vlm=False)
+    
+    def full_perceive(self, monitor: Optional[int] = None) -> PerceptionResult:
+        """Full perception with VLM (slow, requires GPU)."""
+        if not self._enable_vlm:
+            logger.warning("VLM not enabled. Use enable_vlm=True in constructor.")
+        return self.perceive(monitor, use_vlm=True)
