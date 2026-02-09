@@ -67,6 +67,21 @@ class MCPConfig(BaseModel):
         default_factory=lambda: os.getenv("PLAYWRIGHT_HEADLESS", "false").lower() == "true"
     )
     
+    # Chrome profile — use your real browser with logged-in sessions
+    # Set CHROME_PROFILE=true and point CHROME_USER_DATA_DIR to your
+    # Chrome user data directory (defaults to the standard Windows path).
+    # The 'Default' profile is used automatically. For a different profile
+    # (e.g. 'Profile 4'), set the full path including the profile folder.
+    chrome_profile: bool = Field(
+        default_factory=lambda: os.getenv("CHROME_PROFILE", "true").lower() == "true"
+    )
+    chrome_user_data_dir: str = Field(
+        default_factory=lambda: os.getenv(
+            "CHROME_USER_DATA_DIR",
+            os.path.join(os.environ.get("LOCALAPPDATA", ""), "Google", "Chrome", "User Data")
+        )
+    )
+    
     # Agent settings
     max_steps: int = 30          # Max actions before giving up
     max_retries: int = 3         # Retries per failed action

@@ -32,11 +32,32 @@ console = Console()
 
 # ─── Playwright MCP Server Parameters ─────────────────────────────────────────
 
-def get_playwright_server_params(headless: bool = False) -> StdioServerParameters:
-    """Get the params to launch @playwright/mcp as a subprocess."""
+def get_playwright_server_params(config: MCPConfig) -> StdioServerParameters:
+    """Get the params to launch @playwright/mcp as a subprocess.
+    
+    When chrome_profile is enabled, uses your real Chrome browser
+    with all cookies, sessions, and extensions.
+    
+    NOTE: --user-data-dir points to the *root* Chrome user data folder
+    (e.g. '.../Google/Chrome/User Data'). Chromium defaults to the
+    'Default' profile inside it. To use a different profile like
+    'Profile 4', append it to the path in CHROME_USER_DATA_DIR.
+    """
     args = ["@playwright/mcp@latest"]
-    if headless:
+    
+    if config.chrome_profile:
+        # Use the real Chrome browser with user's profile
+        args.extend(["--browser", "chrome"])
+        args.extend(["--user-data-dir", config.chrome_user_data_dir])
+        # --no-sandbox avoids permission issues on Windows with real profiles
+        args.append("--no-sandbox")
+        # Chrome with a full user profile is slower to start — bump timeouts
+        args.extend(["--timeout-navigation", "120000"])
+        args.extend(["--timeout-action", "30000"])
+    
+    if config.playwright_headless:
         args.append("--headless")
+    
     return StdioServerParameters(
         command="npx",
         args=args,
@@ -120,39 +141,67 @@ class BrowserAgent:
         """
         console.print(Panel(f"[bold cyan]Task:[/bold cyan] {task}", title="🧠 ATLAS MCP Agent"))
         console.print(f"[dim]LLM Backend: {self.llm.name()}[/dim]")
+        if self.config.chrome_profile:
+            console.print(f"[dim]Browser: Chrome (profile: {self.config.chrome_user_data_dir})[/dim]")
+        else:
+            console.print(f"[dim]Browser: Playwright Chromium (clean session)[/dim]")
         console.print(f"[dim]Headless: {self.config.playwright_headless}[/dim]\n")
         
-        server_params = get_playwright_server_params(self.config.playwright_headless)
+        server_params = get_playwright_server_params(self.config)
         
-        console.print("[yellow]Starting Playwright MCP server...[/yellow]")
+        if self.config.chrome_profile:
+            console.print("[yellow]Starting Chrome with your profile...[/yellow]")
+            console.print("[dim]  User data dir: " + self.config.chrome_user_data_dir + "[/dim]")
+            console.print("[dim]  ⚠ Chrome must be fully closed (check system tray too)[/dim]")
+        else:
+            console.print("[yellow]Starting Playwright MCP server...[/yellow]")
         
-        async with stdio_client(server_params) as (read_stream, write_stream):
-            async with ClientSession(read_stream, write_stream) as session:
-                # Initialize the MCP connection
-                await session.initialize()
-                console.print("[green]✓ Connected to Playwright MCP server[/green]")
-                
-                # Discover available tools
-                tools_result = await session.list_tools()
-                mcp_tools = tools_result.tools
-                openai_tools = mcp_tools_to_openai_tools(mcp_tools)
-                
-                self._print_available_tools(mcp_tools)
-                
-                # Build initial messages
-                self.messages = [
-                    {"role": "system", "content": SYSTEM_PROMPT},
-                    {"role": "user", "content": task},
-                ]
-                
-                # ── Agentic Loop ──
-                result = await self._agent_loop(session, openai_tools)
-                
-                console.print(Panel(
-                    f"[bold green]{result}[/bold green]",
-                    title="✅ Task Complete",
-                ))
-                return result
+        try:
+            async with stdio_client(server_params) as (read_stream, write_stream):
+                async with ClientSession(read_stream, write_stream) as session:
+                    # Initialize the MCP connection
+                    await session.initialize()
+                    console.print("[green]✓ Connected to Playwright MCP server[/green]")
+                    
+                    # Discover available tools
+                    tools_result = await session.list_tools()
+                    mcp_tools = tools_result.tools
+                    openai_tools = mcp_tools_to_openai_tools(mcp_tools)
+                    
+                    self._print_available_tools(mcp_tools)
+                    
+                    # Build initial messages
+                    self.messages = [
+                        {"role": "system", "content": SYSTEM_PROMPT},
+                        {"role": "user", "content": task},
+                    ]
+                    
+                    # ── Agentic Loop ──
+                    result = await self._agent_loop(session, openai_tools)
+                    
+                    console.print(Panel(
+                        f"[bold green]{result}[/bold green]",
+                        title="✅ Task Complete",
+                    ))
+                    return result
+        except Exception as e:
+            err_msg = str(e).lower()
+            if "connection closed" in err_msg or "process exited" in err_msg:
+                if self.config.chrome_profile:
+                    console.print(Panel(
+                        "[bold red]Could not connect to Chrome.[/bold red]\n\n"
+                        "This usually means Chrome is still running and has locked\n"
+                        "the profile directory. Playwright needs exclusive access.\n\n"
+                        "[bold yellow]Fix:[/bold yellow]\n"
+                        "  1. Close ALL Chrome windows\n"
+                        "  2. Check the system tray (bottom-right) — right-click Chrome → Exit\n"
+                        "  3. Or run: [cyan]taskkill /F /IM chrome.exe[/cyan]\n\n"
+                        "[dim]Alternatively, set CHROME_PROFILE=false in .env to use\n"
+                        "a clean Playwright Chromium session instead.[/dim]",
+                        title="❌ Chrome Profile Locked",
+                    ))
+                    return "Error: Chrome profile is locked. Close Chrome and try again."
+            raise
     
     async def _agent_loop(
         self,
