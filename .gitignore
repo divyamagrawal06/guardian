@@ -53,6 +53,11 @@ __pycache__/
 *.pth
 *.onnx
 *.safetensors
+*.gguf
+*.bin
+models/downloads/
+data/screenshots/
+*.db
 
 # ========================
 # Environment Variables
