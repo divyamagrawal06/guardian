@@ -188,6 +188,8 @@ class GeminiBackend(LLMBackend):
         tools: Optional[List[Dict[str, Any]]] = None,
         temperature: Optional[float] = None,
     ) -> Dict[str, Any]:
+        import time
+        import re as _re
         from google.genai import types
         
         client = self._get_client()
@@ -206,11 +208,50 @@ class GeminiBackend(LLMBackend):
             declarations = self._openai_tools_to_gemini_declarations(tools)
             gen_config.tools = [types.Tool(function_declarations=declarations)]
         
-        response = client.models.generate_content(
-            model=self.cfg.model,
-            contents=contents,
-            config=gen_config,
-        )
+        # Retry with exponential backoff for rate limits
+        max_retries = 5
+        response = None
+        for attempt in range(max_retries):
+            try:
+                response = client.models.generate_content(
+                    model=self.cfg.model,
+                    contents=contents,
+                    config=gen_config,
+                )
+                break  # Success
+            except Exception as e:
+                err_str = str(e)
+                if "429" in err_str or "RESOURCE_EXHAUSTED" in err_str:
+                    # quota=0 means the free tier is disabled entirely — retrying is pointless
+                    if "limit: 0" in err_str:
+                        raise RuntimeError(
+                            "\n[!] Gemini free tier quota is 0 for your GCP project.\n"
+                            "This is NOT a transient rate limit — retrying won't help.\n\n"
+                            "Fix options:\n"
+                            "  1. Enable billing on your GCP project at console.cloud.google.com\n"
+                            "     (even $0 billing unlocks the free tier quota)\n\n"
+                            "  2. Use OpenRouter instead (free credits, no billing needed):\n"
+                            "     Set in .env:\n"
+                            "       LLM_BACKEND=openai\n"
+                            "       OPENAI_BASE_URL=https://openrouter.ai/api/v1\n"
+                            "       OPENAI_API_KEY=<key from openrouter.ai/keys>\n"
+                            "       OPENAI_MODEL=google/gemini-2.0-flash-exp:free\n"
+                        ) from e
+                    
+                    # Transient rate limit — extract server-suggested delay and retry
+                    delay_match = _re.search(r'retry\w* in ([\d.]+)', err_str, _re.IGNORECASE)
+                    wait = float(delay_match.group(1)) + 2 if delay_match else min(15 * (2 ** attempt), 120)
+                    
+                    if attempt < max_retries - 1:
+                        console.print(
+                            f"  [yellow]⏳ Rate limited (attempt {attempt + 1}/{max_retries}), "
+                            f"waiting {wait:.0f}s...[/yellow]"
+                        )
+                        time.sleep(wait)
+                    else:
+                        raise
+                else:
+                    raise  # Non-rate-limit error, don't retry
         
         # Parse response
         result = {
