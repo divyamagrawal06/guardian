@@ -89,8 +89,41 @@ class LLMModel:
     
     def _generate(self, prompt: str, max_tokens: Optional[int] = None) -> str:
         """Generate completion from prompt."""
+        
+        # Check backend
+        if self.config.backend == "ollama":
+            import requests
+            
+            logger.debug(f"Ollama Prompt ({self.config.ollama_model}):\n{prompt}")
+            
+            try:
+                response = requests.post(
+                    f"{config.ollama.base_url}/api/generate",
+                    json={
+                        "model": self.config.ollama_model,
+                        "prompt": prompt,
+                        "stream": False,
+                        "options": {
+                            "temperature": self.config.temperature,
+                            "num_predict": max_tokens or self.config.max_tokens,
+                            "stop": ["</s>", "[/INST]", "\n\n\n"]
+                        }
+                    },
+                    timeout=config.ollama.timeout
+                )
+                response.raise_for_status()
+                result = response.json()["response"].strip()
+                logger.debug(f"Ollama Output:\n{result}")
+                return result
+            except Exception as e:
+                logger.error(f"Ollama generation failed: {e}")
+                return ""
+        
+        # Fallback to LlamaCpp
         if self._model is None:
             self.load()
+            
+        logger.debug(f"LlamaCpp Prompt:\n{prompt}")
             
         output = self._model(
             prompt,
@@ -99,7 +132,9 @@ class LLMModel:
             stop=["</s>", "[/INST]", "\n\n\n"],
         )
         
-        return output["choices"][0]["text"].strip()
+        result = output["choices"][0]["text"].strip()
+        logger.debug(f"LlamaCpp Output:\n{result}")
+        return result
     
     def extract_intent(self, user_prompt: str) -> Intent:
         """
@@ -325,12 +360,44 @@ Scores should be 0-1. [/INST]
     
     def _parse_json(self, text: str) -> Any:
         """Extract and parse JSON from LLM response."""
-        # Find JSON in response
-        start = text.find('{') if '{' in text else text.find('[')
-        end = max(text.rfind('}'), text.rfind(']')) + 1
+        import json
+        import re
         
-        if start != -1 and end > start:
-            json_str = text[start:end]
-            return json.loads(json_str)
+        # 1. Try to find a code block first (common in newer models)
+        code_block = re.search(r"```(?:json)?\s*([\s\S]*?)\s*```", text)
+        if code_block:
+            text = code_block.group(1)
             
-        raise ValueError("No valid JSON found in response")
+        # 2. Find first opening bracket
+        start_brace = text.find('{')
+        start_bracket = text.find('[')
+        
+        if start_brace == -1 and start_bracket == -1:
+             logger.warning(f"No JSON brackets found in response: {text[:50]}...")
+             return {}
+             
+        # Determine which comes first
+        if start_brace != -1 and (start_bracket == -1 or start_brace < start_bracket):
+            start = start_brace
+            opener, closer = '{', '}'
+        else:
+            start = start_bracket
+            opener, closer = '[', ']'
+            
+        # 3. Find matching closing bracket
+        count = 0
+        for i, char in enumerate(text[start:], start=start):
+            if char == opener:
+                count += 1
+            elif char == closer:
+                count -= 1
+                if count == 0:
+                    json_str = text[start:i+1]
+                    try:
+                        return json.loads(json_str)
+                    except json.JSONDecodeError as e:
+                        logger.error(f"Extracted JSON invalid error: {e}")
+                        return {}
+        
+        logger.warning("Unmatched brackets in JSON response")
+        return {}

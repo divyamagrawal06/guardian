@@ -72,30 +72,45 @@ class Verifier:
                       before: PerceptionResult, 
                       after: PerceptionResult) -> VerificationResult:
         """Verify click action."""
-        # Check for visual changes that indicate success
-        changes = []
+        reasons = []
+        confidence = 0.0
         
-        # Look for new elements (dropdown, dialog, etc.)
+        # 1. Check for text changes (OCR)
         before_texts = {e.text for e in before.fused_elements if e.text}
         after_texts = {e.text for e in after.fused_elements if e.text}
         new_texts = after_texts - before_texts
+        
         if new_texts:
-            changes.append(f"New text appeared: {list(new_texts)[:3]}")
+            reasons.append(f"New text detected: {list(new_texts)[:3]}")
+            confidence += 0.4
+            
+        # 2. Check for visual changes (create diff)
+        diff_score, diff_percent = self._calculate_visual_diff(before.frame.image, after.frame.image)
         
-        # Check if clicked element is now selected/focused
-        # (This would need more sophisticated visual diff)
-        
-        # Simple heuristic: if OCR results changed, something happened
+        if diff_percent > 1.0:  # >1% pixels changed (Significant)
+            reasons.append(f"Visual change detected ({diff_percent:.2f}%)")
+            confidence += 0.4
+        elif diff_percent > 0.1:  # >0.1% pixels changed (Subtle)
+            reasons.append(f"Minor visual change detected ({diff_percent:.2f}%)")
+            confidence += 0.2
+            
+        # 3. Check if text count changed significantly
         before_count = len(before.ocr_results)
         after_count = len(after.ocr_results)
         if abs(after_count - before_count) > 2:
-            changes.append(f"Text count changed: {before_count} -> {after_count}")
-        
-        passed = len(changes) > 0
+            reasons.append(f"Text count changed: {before_count} -> {after_count}")
+            confidence += 0.2
+            
+        passed = confidence >= self.confidence_threshold
+        # If visual change is massive, pass even if confidence is low
+        if diff_percent > 5.0:
+            passed = True
+            confidence = max(confidence, 0.8)
+            
         return VerificationResult(
             passed=passed,
-            confidence=0.7 if passed else 0.3,
-            reason="; ".join(changes) if changes else "No visible change detected"
+            confidence=min(confidence, 1.0),
+            reason="; ".join(reasons) if reasons else "No significant change detected"
         )
     
     def _verify_type(self, action: PlannedAction,
@@ -106,24 +121,24 @@ class Verifier:
         
         # Look for the typed text in OCR results
         for result in after.ocr_results:
-            if typed_text.lower() in result.get("text", "").lower():
+            ocr_text = result.get("text", "").lower()
+            if typed_text.lower() in ocr_text:
                 return VerificationResult(
                     passed=True, confidence=0.9,
                     reason=f"Typed text '{typed_text}' found on screen"
                 )
         
-        # Partial match
-        for result in after.ocr_results:
-            ocr_text = result.get("text", "").lower()
-            if any(word in ocr_text for word in typed_text.lower().split()):
-                return VerificationResult(
-                    passed=True, confidence=0.6,
-                    reason=f"Partial text match found"
-                )
-        
+        # Visual check as fallback
+        diff_score, diff_percent = self._calculate_visual_diff(before.frame.image, after.frame.image)
+        if diff_percent > 0.1: # Typing should change >0.1% pixels
+            return VerificationResult(
+                passed=True, confidence=0.5,
+                reason=f"Visual change detected during typing ({diff_percent:.2f}%)"
+            )
+            
         return VerificationResult(
-            passed=False, confidence=0.3,
-            reason=f"Typed text not found on screen"
+            passed=False, confidence=0.2,
+            reason=f"Typed text not found and no visual change"
         )
     
     def _verify_key(self, action: PlannedAction,
@@ -132,30 +147,69 @@ class Verifier:
         """Verify key press."""
         key = action.key or ""
         
-        # For Enter, check if screen changed significantly
-        if key in ["enter", "return"]:
-            before_texts = {e.text for e in before.fused_elements if e.text}
-            after_texts = {e.text for e in after.fused_elements if e.text}
-            if before_texts != after_texts:
-                return VerificationResult(passed=True, confidence=0.7, 
-                                          reason="Screen changed after Enter")
+        # Visual check
+        diff_score, diff_percent = self._calculate_visual_diff(before.frame.image, after.frame.image)
         
-        # For Tab, check if focus moved
-        if key == "tab":
-            return VerificationResult(passed=True, confidence=0.5,
-                                      reason="Tab pressed (focus change not verified)")
-        
-        return self._verify_generic(before, after)
+        # Keys like Enter usually cause big changes
+        if key.lower() in ["enter", "return"]:
+            if diff_percent > 1.0:  # >1% change
+                return VerificationResult(passed=True, confidence=0.8, 
+                                          reason=f"Significant screen update after Enter ({diff_percent:.2f}%)")
+            elif diff_percent > 0.1:
+                return VerificationResult(passed=True, confidence=0.6,
+                                          reason=f"Moderate screen update after Enter ({diff_percent:.2f}%)")
+                                          
+        # General key press check
+        if diff_percent > 0.1:
+             return VerificationResult(passed=True, confidence=0.5,
+                                       reason=f"Screen update detected ({diff_percent:.2f}%)")
+                                       
+        return VerificationResult(passed=False, confidence=0.2,
+                                  reason="No visual change detected after key press")
     
     def _verify_generic(self, before: PerceptionResult,
                         after: PerceptionResult) -> VerificationResult:
         """Generic verification: did anything change?"""
-        before_count = len(before.ocr_results)
-        after_count = len(after.ocr_results)
+        diff_score, diff_percent = self._calculate_visual_diff(before.frame.image, after.frame.image)
         
-        if before_count != after_count:
-            return VerificationResult(passed=True, confidence=0.5,
-                                      reason="Screen content changed")
+        if diff_percent > 1.0:
+            return VerificationResult(passed=True, confidence=0.7,
+                                      reason=f"Screen content changed ({diff_percent:.2f}%)")
+        elif diff_percent > 0.1:
+             return VerificationResult(passed=True, confidence=0.4,
+                                       reason=f"Minor visual change ({diff_percent:.2f}%)")
+                                       
+        return VerificationResult(passed=True, confidence=0.3, # Passed but low confidence
+                                  reason="Action executed (no significant change)")
+
+    def _calculate_visual_diff(self, img1: Any, img2: Any) -> tuple:
+        """
+        Calculate visual difference between two images.
+        Returns: (mse, percent_changed)
+        """
+        import cv2
+        import numpy as np
         
-        return VerificationResult(passed=True, confidence=0.4,
-                                  reason="Action executed (no change verification)")
+        # Ensure images are same size
+        if img1.shape != img2.shape:
+            img2 = cv2.resize(img2, (img1.shape[1], img1.shape[0]))
+            
+        # Convert to grayscale
+        gray1 = cv2.cvtColor(img1, cv2.COLOR_BGR2GRAY)
+        gray2 = cv2.cvtColor(img2, cv2.COLOR_BGR2GRAY)
+        
+        # Compute absolute difference
+        diff = cv2.absdiff(gray1, gray2)
+        
+        # Threshold to find changed pixels
+        _, thresh = cv2.threshold(diff, 30, 255, cv2.THRESH_BINARY)
+        
+        # Calculate percentage of changed pixels
+        total_pixels = thresh.size
+        changed_pixels = cv2.countNonZero(thresh)
+        percent_changed = (changed_pixels / total_pixels) * 100
+        
+        # Calculate Mean Squared Error
+        mse = np.mean((gray1 - gray2) ** 2)
+        
+        return mse, percent_changed
