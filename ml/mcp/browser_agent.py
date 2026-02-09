@@ -14,7 +14,12 @@ This is fully self-contained — no dependencies on the rest of the ATLAS pipeli
 from __future__ import annotations
 import asyncio
 import json
+import os
+import shutil
+import subprocess
 import sys
+import socket
+import time
 from typing import List, Dict, Any, Optional
 from rich.console import Console
 from rich.panel import Panel
@@ -30,30 +35,108 @@ from llm_backend import LLMBackend, create_llm
 console = Console()
 
 
+# ─── Chrome + CDP Helpers ──────────────────────────────────────────────────────
+
+def _find_chrome_executable() -> Optional[str]:
+    """Find the Chrome executable on the system."""
+    # Windows paths
+    candidates = [
+        os.path.join(os.environ.get("PROGRAMFILES", ""), "Google", "Chrome", "Application", "chrome.exe"),
+        os.path.join(os.environ.get("PROGRAMFILES(X86)", ""), "Google", "Chrome", "Application", "chrome.exe"),
+        os.path.join(os.environ.get("LOCALAPPDATA", ""), "Google", "Chrome", "Application", "chrome.exe"),
+    ]
+    for path in candidates:
+        if path and os.path.isfile(path):
+            return path
+    # Fallback: check PATH
+    chrome_in_path = shutil.which("chrome") or shutil.which("google-chrome")
+    return chrome_in_path
+
+
+def _is_port_open(port: int, host: str = "127.0.0.1") -> bool:
+    """Check if a TCP port is open."""
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        s.settimeout(1)
+        return s.connect_ex((host, port)) == 0
+
+
+def launch_chrome_with_debugging(config: MCPConfig, port: int = 9222) -> bool:
+    """Launch Chrome with remote debugging enabled.
+    
+    Uses the user's real profile so all cookies/sessions are available.
+    Returns True if Chrome is ready on the debug port, False on failure.
+    
+    On Windows, uses PowerShell Start-Process because Python's subprocess.Popen
+    keeps handles that prevent Chrome from opening its debug port.
+    """
+    if _is_port_open(port):
+        console.print(f"[green]Chrome already running on debug port {port}[/green]")
+        return True
+    
+    chrome_exe = _find_chrome_executable()
+    if not chrome_exe:
+        console.print("[red]Could not find Chrome. Install Chrome or set CHROME_PROFILE=false.[/red]")
+        return False
+    
+    console.print(f"[yellow]Launching Chrome with remote debugging (port {port})...[/yellow]")
+    console.print(f"[dim]  Executable: {chrome_exe}[/dim]")
+    console.print(f"[dim]  Profile: {config.chrome_user_data_dir}[/dim]")
+    
+    if sys.platform == "win32":
+        # Use PowerShell Start-Process — Python's subprocess.Popen keeps handles
+        # that prevent Chrome from binding its remote debugging port.
+        ps_cmd = (
+            f'Start-Process -FilePath "{chrome_exe}" '
+            f'-ArgumentList "--remote-debugging-port={port}",'
+            f'"--user-data-dir={config.chrome_user_data_dir}",'
+            f'"--no-first-run","--no-default-browser-check"'
+        )
+        subprocess.run(
+            ["powershell", "-Command", ps_cmd],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            timeout=15,
+        )
+    else:
+        subprocess.Popen(
+            [
+                chrome_exe,
+                f"--remote-debugging-port={port}",
+                f"--user-data-dir={config.chrome_user_data_dir}",
+                "--no-first-run",
+                "--no-default-browser-check",
+            ],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            start_new_session=True,
+        )
+    
+    # Wait for the debug port to become available
+    for i in range(30):
+        if _is_port_open(port):
+            console.print(f"[green]✓ Chrome ready on port {port}[/green]")
+            return True
+        time.sleep(1)
+        if i % 5 == 4:
+            console.print(f"[dim]  Waiting for Chrome... ({i+1}s)[/dim]")
+    
+    console.print("[red]Chrome started but debug port never opened.[/red]")
+    return False
+
+
 # ─── Playwright MCP Server Parameters ─────────────────────────────────────────
 
-def get_playwright_server_params(config: MCPConfig) -> StdioServerParameters:
+def get_playwright_server_params(config: MCPConfig, cdp_port: int = 9222) -> StdioServerParameters:
     """Get the params to launch @playwright/mcp as a subprocess.
     
-    When chrome_profile is enabled, uses your real Chrome browser
-    with all cookies, sessions, and extensions.
-    
-    NOTE: --user-data-dir points to the *root* Chrome user data folder
-    (e.g. '.../Google/Chrome/User Data'). Chromium defaults to the
-    'Default' profile inside it. To use a different profile like
-    'Profile 4', append it to the path in CHROME_USER_DATA_DIR.
+    When chrome_profile is enabled, connects to Chrome via CDP
+    (Chrome DevTools Protocol) on the given port.
     """
     args = ["@playwright/mcp@latest"]
     
     if config.chrome_profile:
-        # Use the real Chrome browser with user's profile
-        args.extend(["--browser", "chrome"])
-        args.extend(["--user-data-dir", config.chrome_user_data_dir])
-        # --no-sandbox avoids permission issues on Windows with real profiles
-        args.append("--no-sandbox")
-        # Chrome with a full user profile is slower to start — bump timeouts
-        args.extend(["--timeout-navigation", "120000"])
-        args.extend(["--timeout-action", "30000"])
+        # Connect to existing Chrome via CDP instead of launching a new browser
+        args.extend(["--cdp-endpoint", f"http://127.0.0.1:{cdp_port}"])
     
     if config.playwright_headless:
         args.append("--headless")
@@ -133,6 +216,10 @@ class BrowserAgent:
         Launches the Playwright MCP server, connects, discovers tools,
         and runs the agentic loop until completion or max steps.
         
+        When chrome_profile is enabled:
+          1. Launches Chrome with --remote-debugging-port
+          2. Connects Playwright MCP via --cdp-endpoint
+          
         Args:
             task: Natural language task description
             
@@ -142,21 +229,24 @@ class BrowserAgent:
         console.print(Panel(f"[bold cyan]Task:[/bold cyan] {task}", title="🧠 ATLAS MCP Agent"))
         console.print(f"[dim]LLM Backend: {self.llm.name()}[/dim]")
         if self.config.chrome_profile:
-            console.print(f"[dim]Browser: Chrome (profile: {self.config.chrome_user_data_dir})[/dim]")
+            console.print(f"[dim]Browser: Chrome via CDP (profile: {self.config.chrome_user_data_dir})[/dim]")
         else:
             console.print(f"[dim]Browser: Playwright Chromium (clean session)[/dim]")
         console.print(f"[dim]Headless: {self.config.playwright_headless}[/dim]\n")
         
-        server_params = get_playwright_server_params(self.config)
+        # ── Launch Chrome with debugging if using profile mode ──
+        cdp_port = 9222
         
         if self.config.chrome_profile:
-            console.print("[yellow]Starting Chrome with your profile...[/yellow]")
-            console.print("[dim]  User data dir: " + self.config.chrome_user_data_dir + "[/dim]")
-            console.print("[dim]  ⚠ Chrome must be fully closed (check system tray too)[/dim]")
-        else:
-            console.print("[yellow]Starting Playwright MCP server...[/yellow]")
+            if not launch_chrome_with_debugging(self.config, cdp_port):
+                return "Error: Could not launch Chrome with remote debugging."
         
         try:
+            server_params = get_playwright_server_params(self.config, cdp_port)
+            
+            if not self.config.chrome_profile:
+                console.print("[yellow]Starting Playwright MCP server...[/yellow]")
+            
             async with stdio_client(server_params) as (read_stream, write_stream):
                 async with ClientSession(read_stream, write_stream) as session:
                     # Initialize the MCP connection
@@ -187,21 +277,21 @@ class BrowserAgent:
         except Exception as e:
             err_msg = str(e).lower()
             if "connection closed" in err_msg or "process exited" in err_msg:
-                if self.config.chrome_profile:
-                    console.print(Panel(
-                        "[bold red]Could not connect to Chrome.[/bold red]\n\n"
-                        "This usually means Chrome is still running and has locked\n"
-                        "the profile directory. Playwright needs exclusive access.\n\n"
-                        "[bold yellow]Fix:[/bold yellow]\n"
-                        "  1. Close ALL Chrome windows\n"
-                        "  2. Check the system tray (bottom-right) — right-click Chrome → Exit\n"
-                        "  3. Or run: [cyan]taskkill /F /IM chrome.exe[/cyan]\n\n"
-                        "[dim]Alternatively, set CHROME_PROFILE=false in .env to use\n"
-                        "a clean Playwright Chromium session instead.[/dim]",
-                        title="❌ Chrome Profile Locked",
-                    ))
-                    return "Error: Chrome profile is locked. Close Chrome and try again."
+                console.print(Panel(
+                    "[bold red]MCP server connection lost.[/bold red]\n\n"
+                    "The Playwright MCP server exited unexpectedly.\n\n"
+                    "[bold yellow]Possible fixes:[/bold yellow]\n"
+                    "  1. Close ALL Chrome windows and try again\n"
+                    "  2. Check the system tray (bottom-right)\n"
+                    "  3. Run: [cyan]taskkill /F /IM chrome.exe[/cyan]\n"
+                    "  4. Set CHROME_PROFILE=false in .env for clean session\n",
+                    title="❌ Connection Error",
+                ))
+                return f"Error: {e}"
             raise
+        finally:
+            # Don't kill Chrome — leave it open for the user
+            pass
     
     async def _agent_loop(
         self,
