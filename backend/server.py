@@ -43,7 +43,6 @@ async def lifespan(app: FastAPI):
     
     yield
     
-    # Cleanup
     logger.info("Shutting down ATLAS backend...")
     if agent and agent.memory:
         agent.memory.close()
