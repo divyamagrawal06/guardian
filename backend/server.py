@@ -10,7 +10,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from loguru import logger
 
 # Add ml/ to Python path so we can import the agent
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "ml"))
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "ml_2"))
 
 # Load .env from workspace root
 from dotenv import load_dotenv
