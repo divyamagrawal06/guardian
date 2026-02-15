@@ -1066,3 +1066,616 @@ CREATE INDEX idx_model_cache_timestamp ON model_cache(cached_at);
 ```
 
 ## 
+Correctness Properties
+
+A property is a characteristic or behavior that should hold true across all valid executions of a system—essentially, a formal statement about what the system should do. Properties serve as the bridge between human-readable specifications and machine-verifiable correctness guarantees.
+
+### Task Analysis Properties
+
+Property 1: Intent extraction completeness
+*For any* natural language request, parsing should produce an Intent object with all required fields (intent_type, entities, confidence).
+**Validates: Requirements 1.1**
+
+Property 2: Task graph structural validity
+*For any* decomposed request, the resulting Task_Graph should form a valid directed acyclic graph with no cycles and at least one root node.
+**Validates: Requirements 1.2, 1.3**
+
+Property 3: Agent type assignment completeness
+*For any* Task_Graph, every TaskNode should have a valid AgentType from the defined enumeration.
+**Validates: Requirements 1.5**
+
+### Agent Lifecycle Properties
+
+Property 4: Agent initialization completeness
+*For any* spawned agent, the AgentSpec and ExecutionContext should contain all required fields (task_description, context, working_directory, available_tools).
+**Validates: Requirements 2.1, 2.2**
+
+Property 5: Parallel execution for independent tasks
+*For any* Task_Graph with multiple tasks having no dependencies, spawning should create multiple concurrent agents rather than sequential execution.
+**Validates: Requirements 2.3, 12.2**
+
+Property 6: Agent termination after completion
+*For any* completed agent, the agent process should be terminated and output should be collected before the agent ID is removed from active agents.
+**Validates: Requirements 2.4**
+
+Property 7: Resource limit enforcement
+*For any* agent spawn request when active agents equal max_concurrent, the spawn should be queued rather than executed immediately.
+**Validates: Requirements 2.6, 12.5, 17.5**
+
+### Vision System Properties
+
+Property 8: Screen capture validity
+*For any* screen capture request, the returned Screenshot should contain valid image_data, timestamp, and resolution.
+**Validates: Requirements 3.1**
+
+Property 9: OCR text extraction
+*For any* Screenshot containing visible text, OCR extraction should return at least one TextRegion with non-empty text.
+**Validates: Requirements 3.2**
+
+Property 10: Change detection sensitivity
+*For any* two different Screenshots, change detection should identify at least one changed region if the images differ.
+**Validates: Requirements 3.4**
+
+Property 11: State verification consistency
+*For any* expected StateDescription and matching Screenshot, verification should return true; for non-matching screenshots, verification should return false.
+**Validates: Requirements 3.5**
+
+### Verification and Error Correction Properties
+
+Property 12: Output validation execution
+*For any* AgentOutput and VerificationCriteria, validation should produce a VerificationResult with a boolean passed field.
+**Validates: Requirements 4.1**
+
+Property 13: Failure analysis and correction
+*For any* failed agent, analyzing the failure should produce a corrected AgentSpec that includes the original error context.
+**Validates: Requirements 4.2, 4.3**
+
+Property 14: Retry limit escalation
+*For any* agent that fails N times where N equals retry_policy.escalate_after, the next failure should trigger user escalation rather than another retry.
+**Validates: Requirements 4.4**
+
+Property 15: Corrective agent spawning
+*For any* VerificationResult with passed=false, a corrective agent should be spawned with CorrectionInstructions derived from the verification issues.
+**Validates: Requirements 4.5**
+
+Property 16: Completion reporting
+*For any* Task_Graph where all nodes have status=COMPLETED, a completion report should be sent to the user.
+**Validates: Requirements 4.6**
+
+### Visual QA Properties
+
+Property 17: Browser automation for UI tasks
+*For any* completed task with agent_type=UI, browser automation should be initiated for visual QA.
+**Validates: Requirements 5.1**
+
+Property 18: QA screenshot capture
+*For any* visual QA session, at least one Screenshot of the running application should be captured.
+**Validates: Requirements 5.2**
+
+Property 19: UI defect correction
+*For any* visual QA that detects defects, an Agent_UI should be spawned with specific correction instructions.
+**Validates: Requirements 5.4**
+
+Property 20: Playwright usage for browser automation
+*For any* browser automation request, the tool invoked should be Playwright MCP.
+**Validates: Requirements 5.5, 11.1**
+
+### HID Control Properties
+
+Property 21: Keyboard simulation with timing
+*For any* text typing request, keyboard events should be generated with delays consistent with the configured typing_speed_wpm.
+**Validates: Requirements 6.1**
+
+Property 22: Mouse click coordination
+*For any* click request, mouse movement to the target location should occur before the click event.
+**Validates: Requirements 6.2**
+
+Property 23: Vision-HID coordination
+*For any* find_and_click request, the Vision_System should be queried to locate the element before HID_Controller performs the click.
+**Validates: Requirements 6.3**
+
+Property 24: Human-like delay insertion
+*For any* sequence of HID actions, delays between actions should fall within the configured human_delay_range.
+**Validates: Requirements 6.4**
+
+Property 25: Scroll gesture simulation
+*For any* scroll request, scroll events should be generated in the specified direction.
+**Validates: Requirements 6.5**
+
+### AI Model Routing Properties
+
+Property 26: Text request routing
+*For any* text generation request, the request should be routed to one of the configured LLM providers (OpenAI, Gemini, Mistral).
+**Validates: Requirements 7.1, 7.3**
+
+Property 27: Vision request routing
+*For any* vision analysis request, the request should be routed to a vision-capable model (LLaVA, GPT-4V, Gemini Vision).
+**Validates: Requirements 7.2**
+
+Property 28: API failure fallback
+*For any* API request that fails, a fallback request should be made to an alternative model.
+**Validates: Requirements 7.5**
+
+### Memory and Persistence Properties
+
+Property 29: Execution persistence
+*For any* completed task, the Task_Graph, agent outputs, and execution metrics should be stored in PostgreSQL.
+**Validates: Requirements 8.1, 15.1, 15.2**
+
+Property 30: Similarity search for past executions
+*For any* new request, the Memory_Layer should be queried for similar past executions using vector similarity.
+**Validates: Requirements 8.2, 8.5**
+
+Property 31: Error pattern recording
+*For any* error that is successfully resolved, the error context and resolution should be recorded in the error_patterns table.
+**Validates: Requirements 8.4**
+
+Property 32: State recovery after restart
+*For any* in-progress task when the system restarts, the task should be recovered from PostgreSQL with its previous state.
+**Validates: Requirements 15.3**
+
+Property 33: Memory layer uses SQLite
+*For any* memory query operation, the query should execute against the SQLite database rather than PostgreSQL.
+**Validates: Requirements 15.5**
+
+### Desktop Application Properties
+
+Property 34: Real-time task visualization
+*For any* executing task, the Desktop_App should display the current Task_Graph with node statuses updated in real-time.
+**Validates: Requirements 9.2**
+
+Property 35: Output display
+*For any* AgentOutput produced, the output should appear in the Desktop_App's log view within the real-time update interval.
+**Validates: Requirements 9.3**
+
+Property 36: User input prompting
+*For any* clarification request from Guardian, a prompt should be displayed in the Desktop_App and execution should pause until response is received.
+**Validates: Requirements 9.4**
+
+Property 37: Task history search
+*For any* search query on task history, results should include all executions where the original_request or task descriptions match the query.
+**Validates: Requirements 9.5**
+
+### Companion App Properties
+
+Property 38: Mobile status display
+*For any* executing task, the Companion_App should display the current status and progress percentage.
+**Validates: Requirements 10.1**
+
+Property 39: Push notification delivery
+*For any* significant event (completion, failure, escalation), a push notification should be sent to the Companion_App.
+**Validates: Requirements 10.2**
+
+Property 40: App sync on open
+*For any* Companion_App open event, a sync request should be made to retrieve current state from the Desktop_App/API.
+**Validates: Requirements 10.3**
+
+Property 41: Completed task display
+*For any* completed execution, the Companion_App should display an execution summary with key outputs.
+**Validates: Requirements 10.4**
+
+Property 42: Remote task control
+*For any* running task, the Companion_App should provide pause and cancel controls that affect the task execution.
+**Validates: Requirements 10.5**
+
+### Tool Integration Properties
+
+Property 43: Correct tool routing
+*For any* tool request, the request should be routed to the correct tool based on the operation type (Playwright for browser, Figma for design, Vercel for deployment, Brave for search, Sentry for errors, Filesystem for files).
+**Validates: Requirements 11.1, 11.2, 11.3, 11.4, 11.5, 11.6**
+
+### Parallel Execution Properties
+
+Property 44: Independent task identification
+*For any* Task_Graph, tasks with empty dependencies lists should be identified as ready for immediate execution.
+**Validates: Requirements 12.1**
+
+Property 45: Simultaneous agent monitoring
+*For any* set of parallel agents, all agents should have their status monitored concurrently rather than sequentially.
+**Validates: Requirements 12.3**
+
+Property 46: Dependency-triggered spawning
+*For any* task with dependencies, the task should spawn immediately when all dependency tasks reach COMPLETED status.
+**Validates: Requirements 12.4**
+
+### Scenario-Specific Properties
+
+Property 47: Build request orchestration
+*For any* request classified as a build scenario, the spawned agents should include at least Agent_Arch, Agent_UI, and Agent_Ops types.
+**Validates: Requirements 13.1**
+
+Property 48: Automation request tooling
+*For any* request classified as an automation scenario, both Vision_System and HID_Controller should be utilized during execution.
+**Validates: Requirements 13.2**
+
+Property 49: Debug request agent type
+*For any* request classified as a debugging scenario, at least one Agent_Debug should be spawned.
+**Validates: Requirements 13.3**
+
+### API Backend Properties
+
+Property 50: RESTful endpoint availability
+*For any* API request to task submission or status endpoints, a valid HTTP response should be returned.
+**Validates: Requirements 14.1**
+
+Property 51: WebSocket for long tasks
+*For any* task with estimated_duration > 30 seconds, a WebSocket connection should be established for real-time updates.
+**Validates: Requirements 14.2**
+
+Property 52: LangGraph usage
+*For any* agent workflow orchestration, LangGraph should be used to manage the workflow state machine.
+**Validates: Requirements 14.3**
+
+Property 53: LangChain usage
+*For any* LLM interaction, LangChain should be used to structure the prompt and parse the response.
+**Validates: Requirements 14.4**
+
+Property 54: Concurrent request handling
+*For any* set of concurrent API requests, all requests should be processed without blocking each other.
+**Validates: Requirements 14.5**
+
+### Security Properties
+
+Property 55: Secure credential retrieval
+*For any* credential request, credentials should be retrieved from OS-specific secure storage (Keychain, Credential Manager, Secret Service).
+**Validates: Requirements 16.1, 16.4**
+
+Property 56: Encrypted credential passing
+*For any* credential passed to an agent, the credential should be encrypted in transit and should not appear in logs.
+**Validates: Requirements 16.2**
+
+Property 57: Multiple authentication method support
+*For any* authentication request, the system should support OAuth, API keys, and password-based authentication.
+**Validates: Requirements 16.3**
+
+Property 58: Credential cleanup
+*For any* agent termination, credentials in the agent's ExecutionContext should be cleared from memory.
+**Validates: Requirements 16.5**
+
+### Error Handling Properties
+
+Property 59: Agent crash isolation
+*For any* agent crash, the Guardian core should continue running and other agents should continue executing.
+**Validates: Requirements 17.1**
+
+Property 60: Exponential backoff retry
+*For any* sequence of API failures, the delay between retries should increase exponentially (e.g., 1s, 2s, 4s, 8s).
+**Validates: Requirements 17.2**
+
+Property 61: Offline operation queuing
+*For any* operation requested when network connectivity is lost, the operation should be added to a queue and executed when connectivity returns.
+**Validates: Requirements 17.3**
+
+Property 62: Unrecoverable error context preservation
+*For any* unrecoverable error, all execution context should be saved to disk before presenting the error to the user.
+**Validates: Requirements 17.4**
+
+### Configuration Properties
+
+Property 63: Configuration persistence
+*For any* configuration change, the new configuration should be written to disk and persist across application restarts.
+**Validates: Requirements 18.1**
+
+Property 64: Configuration validation
+*For any* invalid configuration, validation should fail and produce a clear error message describing the specific validation failure.
+**Validates: Requirements 18.5**
+
+### Logging and Observability Properties
+
+Property 65: Agent lifecycle logging
+*For any* agent, spawn, completion, and failure events should all be logged with timestamps.
+**Validates: Requirements 19.1**
+
+Property 66: Error logging completeness
+*For any* error, the log entry should include a full stack trace and context information (agent_id, task_id, execution state).
+**Validates: Requirements 19.2**
+
+Property 67: Performance metrics tracking
+*For any* agent execution, execution_time_seconds and resource usage should be tracked and stored.
+**Validates: Requirements 19.3**
+
+Property 68: Structured log format
+*For any* log entry, the entry should be structured (JSON format) with queryable fields.
+**Validates: Requirements 19.4**
+
+Property 69: Sentry error reporting
+*For any* error, the error should be sent to Sentry API with full context.
+**Validates: Requirements 19.5**
+
+### User Feedback Properties
+
+Property 70: Execution pause for clarification
+*For any* clarification request, task execution should pause and not proceed until user response is received.
+**Validates: Requirements 20.1**
+
+Property 71: Feedback incorporation
+*For any* user feedback provided, the current Task_Graph should be updated to reflect the feedback before execution continues.
+**Validates: Requirements 20.2**
+
+Property 72: Preference persistence
+*For any* user preference expressed, the preference should be stored in the Memory_Layer and retrieved for future similar tasks.
+**Validates: Requirements 20.4**
+
+Property 73: Task cancellation cleanup
+*For any* task cancellation, all related Swarm_Agents should be terminated and all allocated resources should be released.
+**Validates: Requirements 20.5**
+
+## Error Handling
+
+### Error Categories
+
+**Agent Execution Errors**
+- Agent crashes or hangs
+- Agent produces invalid output
+- Agent exceeds timeout
+- Agent exceeds resource limits
+
+**External Service Errors**
+- API rate limits or failures
+- Network connectivity loss
+- Tool integration failures (Playwright, Figma, etc.)
+- Database connection failures
+
+**Vision System Errors**
+- Screen capture failures
+- OCR extraction errors
+- UI element not found
+- Visual verification mismatches
+
+**HID Control Errors**
+- Input simulation failures
+- Element location failures
+- Timing synchronization issues
+
+**System Resource Errors**
+- Memory exhaustion
+- CPU overload
+- Disk space exhaustion
+- Too many concurrent agents
+
+### Error Handling Strategies
+
+**Retry with Correction**
+- Applicable to: Agent execution errors, verification failures
+- Strategy: Analyze failure, generate corrections, respawn agent with error context
+- Max retries: Configured in RetryPolicy (default: 3)
+- Escalation: After max retries, escalate to user with full context
+
+**Exponential Backoff**
+- Applicable to: API failures, network errors, rate limits
+- Strategy: Retry with increasing delays (1s, 2s, 4s, 8s, 16s)
+- Max attempts: 5
+- Fallback: Switch to alternative service or local model
+
+**Graceful Degradation**
+- Applicable to: Resource exhaustion, system overload
+- Strategy: Pause new agent spawns, queue pending tasks, continue monitoring active agents
+- Recovery: Resume spawning when resources drop below threshold
+
+**Isolation and Continue**
+- Applicable to: Agent crashes, tool failures
+- Strategy: Terminate failed agent, log error, continue with other agents
+- Notification: Report failure to user but don't block overall execution
+
+**Queue and Retry**
+- Applicable to: Network connectivity loss, temporary service outages
+- Strategy: Queue operations, periodically check connectivity, execute queue when available
+- Timeout: 5 minutes before escalating to user
+
+### Error Context Preservation
+
+All errors should capture:
+- Timestamp and duration
+- Agent ID and type
+- Task description and context
+- Full stack trace
+- System state (memory, CPU, active agents)
+- Previous retry attempts
+- User context and preferences
+
+Error context is stored in:
+- PostgreSQL (error_patterns table) for learning
+- Sentry API for monitoring and alerting
+- Local logs for debugging
+- Memory_Layer for future error avoidance
+
+### User-Facing Error Messages
+
+Error messages should be:
+- **Actionable**: Suggest specific next steps
+- **Clear**: Avoid technical jargon when possible
+- **Contextual**: Include what was being attempted
+- **Honest**: Don't hide failures or pretend success
+
+Examples:
+- ❌ "Error: NoneType object has no attribute 'text'"
+- ✅ "Couldn't find the login button on the page. The page layout might have changed. Would you like me to try a different approach?"
+
+- ❌ "API Error 429"
+- ✅ "Hit rate limit for OpenAI API. Switching to local Mistral model to continue."
+
+- ❌ "Agent failed"
+- ✅ "The UI agent couldn't apply the requested styling. I've analyzed the error and will retry with a corrected approach."
+
+## Testing Strategy
+
+### Dual Testing Approach
+
+Guardian requires both unit testing and property-based testing for comprehensive coverage:
+
+**Unit Tests**: Verify specific examples, edge cases, and error conditions
+- Specific task decomposition examples
+- Known UI element detection scenarios
+- Error handling for specific failure modes
+- Integration points between components
+- Configuration validation edge cases
+
+**Property Tests**: Verify universal properties across all inputs
+- Task graph structural validity for any decomposition
+- Agent lifecycle correctness for any agent type
+- Resource limit enforcement for any spawn pattern
+- Credential security for any authentication method
+- Error isolation for any agent crash
+
+Both approaches are complementary and necessary. Unit tests catch concrete bugs in specific scenarios, while property tests verify general correctness across the input space.
+
+### Property-Based Testing Configuration
+
+**Testing Library**: Use Hypothesis (Python) for property-based testing
+- Minimum 100 iterations per property test (due to randomization)
+- Each test must reference its design document property
+- Tag format: `# Feature: project-guardian, Property {number}: {property_text}`
+
+**Example Property Test**:
+
+```python
+from hypothesis import given, strategies as st
+import pytest
+
+# Feature: project-guardian, Property 2: Task graph structural validity
+@given(st.text(min_size=10))
+def test_task_graph_is_valid_dag(user_request):
+    """For any decomposed request, the resulting Task_Graph should form a valid DAG."""
+    analyzer = TaskAnalyzer()
+    intent = analyzer.parse_request(user_request, UserContext())
+    task_graph = analyzer.decompose_to_graph(intent)
+    
+    # Verify no cycles
+    assert not task_graph.has_cycles()
+    
+    # Verify at least one root node
+    assert len(task_graph.get_root_nodes()) >= 1
+    
+    # Verify all nodes are reachable from roots
+    assert task_graph.all_nodes_reachable()
+```
+
+### Test Coverage Requirements
+
+**Core Components** (Target: 90% coverage)
+- GuardianCore: Task analysis, agent management, verification
+- TaskAnalyzer: Request parsing, graph decomposition
+- AgentManager: Spawning, monitoring, termination
+- VerificationEngine: Output validation, correction generation
+
+**Integration Points** (Target: 80% coverage)
+- Guardian ↔ Vision System
+- Guardian ↔ HID Controller
+- Guardian ↔ AI Model Router
+- Guardian ↔ Tool Integration Manager
+- API Backend ↔ Guardian Core
+
+**External Integrations** (Target: Mock-based testing)
+- Playwright MCP
+- Figma MCP
+- Vercel CLI
+- Shannon Brave MCP
+- Sentry API
+- Filesystem MCP
+
+### Testing Environments
+
+**Local Development**
+- SQLite for database (faster, no setup)
+- Local models only (Mistral, LLaVA)
+- Mock external services
+- Reduced iteration counts (10 per property test)
+
+**CI/CD Pipeline**
+- PostgreSQL in Docker
+- Mock all external APIs
+- Full iteration counts (100 per property test)
+- Integration tests with real browser automation
+
+**Staging**
+- Full PostgreSQL database
+- Real external services with test accounts
+- End-to-end scenario testing
+- Performance and load testing
+
+### Key Test Scenarios
+
+**Scenario 1: Build Application**
+- Input: "Build a snake game where the snake is a train"
+- Expected: Agent_Arch spawns, Agent_UI spawns, code is generated, tests pass, app launches
+- Verification: Visual QA confirms game works, snake appears as train
+
+**Scenario 2: Automate Workflow**
+- Input: "Log into my portal and download all invoices from March"
+- Expected: Vision locates login form, HID fills credentials, navigation occurs, files download
+- Verification: Files exist in download folder, correct month, correct count
+
+**Scenario 3: Debug Issue**
+- Input: "Why is my local server crashing?"
+- Expected: Agent_Debug spawns, logs are analyzed, error identified, patch applied, server restarts
+- Verification: Server runs without crashing, error no longer appears in logs
+
+**Scenario 4: Parallel Execution**
+- Input: "Create a landing page and set up the database"
+- Expected: Agent_UI and Agent_Ops spawn concurrently, both complete, integration works
+- Verification: Landing page displays data from database
+
+**Scenario 5: Error Recovery**
+- Input: "Deploy my app to Vercel"
+- Simulate: First deployment fails due to build error
+- Expected: Agent_Ops respawns with correction, build succeeds, deployment completes
+- Verification: App is live at Vercel URL
+
+**Scenario 6: Resource Limits**
+- Input: Submit 10 concurrent complex requests
+- Expected: Max concurrent agents enforced, tasks queued, all eventually complete
+- Verification: No more than max_concurrent agents active at once, all tasks succeed
+
+### Performance Benchmarks
+
+**Task Analysis**
+- Target: < 2 seconds for request parsing and decomposition
+- Measure: Time from request submission to Task_Graph creation
+
+**Agent Spawning**
+- Target: < 500ms per agent spawn
+- Measure: Time from spawn request to agent RUNNING status
+
+**Vision Processing**
+- Target: < 1 second for screen capture + OCR
+- Target: < 3 seconds for vision model analysis
+- Measure: Time from capture request to results available
+
+**HID Simulation**
+- Target: Typing speed matches configured WPM (default 60 WPM = 300 CPM = 5 chars/sec)
+- Target: Click latency < 100ms
+- Measure: Time between HID commands and actual input events
+
+**Database Operations**
+- Target: < 100ms for task state persistence
+- Target: < 500ms for similarity search queries
+- Measure: Query execution time
+
+**End-to-End Scenarios**
+- Simple task (< 3 agents): < 30 seconds
+- Medium task (3-10 agents): < 2 minutes
+- Complex task (> 10 agents): < 10 minutes
+
+### Monitoring and Observability
+
+**Metrics to Track**
+- Agent spawn rate and failure rate
+- Average task completion time by scenario type
+- Verification pass/fail rates
+- Retry frequency and success rates
+- API costs per task
+- Resource usage (CPU, memory, concurrent agents)
+
+**Alerts to Configure**
+- Agent failure rate > 20%
+- Task completion time > 2x expected
+- Resource usage > 80% of limits
+- API error rate > 10%
+- Database connection failures
+
+**Dashboards**
+- Real-time agent status and task progress
+- Historical execution trends
+- Cost analysis by model and task type
+- Error patterns and resolution rates
+- User satisfaction metrics (task success, retry frequency)
