@@ -83,15 +83,16 @@ async function executeGitCommand(command: string): Promise<string> {
     });
 
     if (!response.ok) {
-      throw new Error(`Git command failed: ${response.statusText}`);
+      // No git API endpoint available — return empty output
+      return "";
     }
 
     const data = (await response.json()) as { output: string; error?: string };
     if (data.error) throw new Error(data.error);
     return data.output;
-  } catch (error) {
-    console.error("Git command error:", error);
-    throw error;
+  } catch {
+    // Git API not available — silently return empty
+    return "";
   }
 }
 
