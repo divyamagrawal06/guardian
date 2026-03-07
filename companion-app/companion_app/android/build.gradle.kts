@@ -22,7 +22,7 @@ subprojects {
 gradle.buildFinished {
     val src = file("C:/ATLAS_BUILD/app/outputs/flutter-apk/app-debug.apk")
     if (src.exists()) {
-        val dest = file("../../build/app/outputs/flutter-apk/app-debug.apk")
+        val dest = file("../build/app/outputs/flutter-apk/app-debug.apk")
         dest.parentFile.mkdirs()
         src.copyTo(dest, overwrite = true)
     }

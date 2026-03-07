@@ -81,7 +81,7 @@ class AtlasService extends ChangeNotifier {
 
   Future<void> loadSettings() async {
     final prefs = await SharedPreferences.getInstance();
-    _serverIp = prefs.getString(_kServerIp) ?? '';
+    _serverIp = prefs.getString(_kServerIp) ?? '127.0.0.1';
     _serverPort = prefs.getInt(_kServerPort) ?? 8000;
     notifyListeners();
   }
