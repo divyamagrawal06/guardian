@@ -1,10 +1,24 @@
 "use client";
 
 import { useEffect, useRef, useState, useCallback } from "react";
-import { Search, Zap, Loader2, CheckCircle2, XCircle, ChevronRight } from "lucide-react";
+import { Search, Zap, Loader2, CheckCircle2, XCircle, ChevronRight, Sparkles } from "lucide-react";
 import { motion, AnimatePresence } from "framer-motion";
 
+// Griffin components
+import { BlueprintCanvas } from "@/components/griffin/blueprint-canvas";
+import { ChatPage } from "@/components/griffin/chat-page";
+import { GodModeTerminal } from "@/components/griffin/god-mode-terminal";
+import { Workstation } from "@/components/griffin/workstation";
+import { CostDashboard } from "@/components/griffin/cost-dashboard";
+import { MultiverseScene } from "@/components/griffin/multiverse";
+import { Navbar as GriffinNavbar } from "@/components/griffin/navbar";
+import { SettingsDialog } from "@/components/griffin/settings-dialog";
+import { useOrchestratorStore } from "@/lib/griffin/orchestrator-store";
+
 // Types
+type AppMode = "atlas" | "turbo";
+type TurboView = "canvas" | "chat" | "terminal" | "workstation" | "cost" | "multiverse";
+
 interface IndexedItem {
   name: string;
   path: string;
@@ -21,10 +35,9 @@ interface ProgressMessage {
   message?: string;
 }
 
-// Detect if running in Tauri
 const isTauri = typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
-
-const WS_URL = "ws://localhost:8000/ws";
+const ATLAS_WS_URL = "ws://localhost:8000/ws";
+const GRIFFIN_WS_URL = process.env.NEXT_PUBLIC_ML_SERVICE_URL ?? "ws://localhost:9100";
 
 async function invoke<T>(cmd: string, args?: Record<string, unknown>): Promise<T> {
   if (isTauri) {
@@ -46,8 +59,7 @@ async function listenEvent(event: string, handler: () => void) {
   }
 }
 
-// ── WebSocket Hook ──────────────────────────────────────────────────────────
-
+// ATLAS WebSocket hook
 function useAtlasAgent() {
   const wsRef = useRef<WebSocket | null>(null);
   const [connected, setConnected] = useState(false);
@@ -57,21 +69,15 @@ function useAtlasAgent() {
 
   const connect = useCallback(() => {
     if (wsRef.current?.readyState === WebSocket.OPEN) return;
-    
     try {
-      const ws = new WebSocket(WS_URL);
-      
-      ws.onopen = () => {
-        console.log("WebSocket connected to ATLAS backend");
-      };
-      
+      const ws = new WebSocket(ATLAS_WS_URL);
+      ws.onopen = () => {};
       ws.onmessage = (event) => {
         const data: ProgressMessage = JSON.parse(event.data);
-        
         if (data.type === "connected") {
           setConnected(true);
         } else if (data.type === "progress") {
-          setProgress(prev => [...prev, data]);
+          setProgress((prev) => [...prev, data]);
         } else if (data.type === "result") {
           setResult(data);
           setRunning(false);
@@ -80,35 +86,24 @@ function useAtlasAgent() {
           setRunning(false);
         }
       };
-      
       ws.onclose = () => {
         setConnected(false);
-        // Auto-reconnect after 2s
         setTimeout(connect, 2000);
       };
-      
-      ws.onerror = () => {
-        setConnected(false);
-      };
-      
+      ws.onerror = () => setConnected(false);
       wsRef.current = ws;
     } catch {
-      console.log("Backend not available, running in search-only mode");
+      console.log("ATLAS backend not available");
     }
   }, []);
 
   useEffect(() => {
     connect();
-    return () => {
-      wsRef.current?.close();
-    };
+    return () => { wsRef.current?.close(); };
   }, [connect]);
 
   const sendCommand = useCallback((command: string) => {
-    if (!wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) {
-      console.error("WebSocket not connected");
-      return;
-    }
+    if (!wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) return;
     setProgress([]);
     setResult(null);
     setRunning(true);
@@ -125,9 +120,38 @@ function useAtlasAgent() {
   return { connected, running, progress, result, sendCommand, stopAgent };
 }
 
-// ── Main Component ──────────────────────────────────────────────────────────
+// Mode Pill Switcher
+function ModeSwitcher({ mode, onChange }: { mode: AppMode; onChange: (m: AppMode) => void }) {
+  return (
+    <div className="fixed top-3 left-1/2 -translate-x-1/2 z-[100] flex items-center gap-1 bg-black/60 backdrop-blur-xl border border-white/10 rounded-full px-1.5 py-1 shadow-2xl">
+      <button
+        onClick={() => onChange("atlas")}
+        className={`flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-medium transition-all duration-200 ${
+          mode === "atlas"
+            ? "bg-white/15 text-white shadow-sm"
+            : "text-white/40 hover:text-white/70"
+        }`}
+      >
+        <Zap className="w-3 h-3" />
+        ATLAS
+      </button>
+      <button
+        onClick={() => onChange("turbo")}
+        className={`flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-medium transition-all duration-200 ${
+          mode === "turbo"
+            ? "bg-gradient-to-r from-[#fa0f83] to-[#911150] text-white shadow-lg shadow-[#fa0f83]/30"
+            : "text-white/40 hover:text-white/70"
+        }`}
+      >
+        <Sparkles className="w-3 h-3" />
+        Super Turbo
+      </button>
+    </div>
+  );
+}
 
-export default function Home() {
+// ATLAS Agent View
+function AtlasView() {
   const [query, setQuery] = useState("");
   const [items, setItems] = useState<IndexedItem[]>([]);
   const [filtered, setFiltered] = useState<IndexedItem[]>([]);
@@ -136,18 +160,16 @@ export default function Home() {
   const [mode, setMode] = useState<"search" | "agent">("search");
   const inputRef = useRef<HTMLInputElement>(null);
   const listRef = useRef<HTMLDivElement>(null);
-
   const agent = useAtlasAgent();
 
-  // Load indexed items on mount
   useEffect(() => {
     async function loadItems() {
       try {
         const result = await invoke<IndexedItem[]>("get_indexed_items");
         setItems(result || []);
         setFiltered(result || []);
-      } catch (e) {
-        console.error("Failed to load items:", e);
+      } catch {
+        // no-op in web mode
       } finally {
         setLoading(false);
       }
@@ -155,7 +177,6 @@ export default function Home() {
     loadItems();
   }, []);
 
-  // Listen for focus-search event from Tauri
   useEffect(() => {
     listenEvent("focus-search", () => {
       inputRef.current?.focus();
@@ -164,37 +185,25 @@ export default function Home() {
     });
   }, []);
 
-  // Filter items + auto-detect mode
   useEffect(() => {
     if (query.trim() === "") {
       setFiltered(items);
       setMode("search");
     } else {
       const q = query.toLowerCase();
-      const matches = items.filter((item) => item.name.toLowerCase().includes(q));
-      setFiltered(matches);
-      // Stay in whatever mode the user chose
+      setFiltered(items.filter((item) => item.name.toLowerCase().includes(q)));
     }
     setSelectedIndex(0);
   }, [query, items]);
 
-  // Open the selected item
   const openItem = useCallback(async (item: IndexedItem) => {
-    try {
-      await invoke("open_item", { path: item.path });
-    } catch (e) {
-      console.error("Failed to open item:", e);
-    }
+    try { await invoke("open_item", { path: item.path }); } catch {}
   }, []);
 
-  // Submit agent command
   const submitCommand = useCallback(() => {
-    if (query.trim() && agent.connected) {
-      agent.sendCommand(query.trim());
-    }
+    if (query.trim() && agent.connected) agent.sendCommand(query.trim());
   }, [query, agent]);
 
-  // Keyboard navigation
   const handleKeyDown = useCallback(
     (e: React.KeyboardEvent) => {
       if (e.key === "ArrowDown") {
@@ -205,15 +214,11 @@ export default function Home() {
         setSelectedIndex((prev) => Math.max(prev - 1, 0));
       } else if (e.key === "Enter") {
         e.preventDefault();
-        if (mode === "agent") {
-          submitCommand();
-        } else if (filtered[selectedIndex]) {
-          openItem(filtered[selectedIndex]);
-        }
+        if (mode === "agent") submitCommand();
+        else if (filtered[selectedIndex]) openItem(filtered[selectedIndex]);
       } else if (e.key === "Escape") {
-        if (agent.running) {
-          agent.stopAgent();
-        } else if (isTauri) {
+        if (agent.running) agent.stopAgent();
+        else if (isTauri) {
           import("@tauri-apps/api/window").then(({ getCurrentWindow }) => {
             getCurrentWindow().hide();
           });
@@ -226,7 +231,6 @@ export default function Home() {
     [filtered, selectedIndex, openItem, mode, submitCommand, agent]
   );
 
-  // Auto-scroll
   useEffect(() => {
     const listEl = listRef.current;
     if (listEl) {
@@ -235,11 +239,9 @@ export default function Home() {
     }
   }, [selectedIndex]);
 
-  // Group: apps first, then files
   const apps = filtered.filter((i) => i.kind === "app");
   const files = filtered.filter((i) => i.kind !== "app");
   const displayItems = [...apps, ...files];
-
   let globalIndex = -1;
 
   return (
@@ -247,13 +249,11 @@ export default function Home() {
       initial={{ opacity: 0, scale: 0.96 }}
       animate={{ opacity: 1, scale: 1 }}
       transition={{ duration: 0.15, ease: "easeOut" }}
-      className="flex flex-col w-full h-screen bg-[#0c0508]/90 backdrop-blur-md rounded-2xl overflow-hidden border border-white/5 shadow-2xl relative"
+      className="flex flex-col w-full h-screen bg-[#0c0508]/90 backdrop-blur-md overflow-hidden border border-white/5 shadow-2xl relative"
       onKeyDown={handleKeyDown}
     >
-      <div className="relative z-10 flex flex-col h-full">
-        {/* Mode Tabs + Search Bar */}
+      <div className="relative z-10 flex flex-col h-full pt-12">
         <div className="border-b border-[#911150]/30">
-          {/* Mode Toggle */}
           <div className="flex items-center gap-1 px-4 pt-3">
             <button
               onClick={() => setMode("search")}
@@ -274,14 +274,10 @@ export default function Home() {
               }`}
             >
               <Zap className="w-3 h-3" /> Agent
-              {agent.connected && (
-                <span className="w-1.5 h-1.5 rounded-full bg-green-400 inline-block" />
-              )}
+              {agent.connected && <span className="w-1.5 h-1.5 rounded-full bg-green-400 inline-block" />}
             </button>
             <span className="ml-auto text-[10px] text-[#e693bc]/25">Tab to switch</span>
           </div>
-
-          {/* Input */}
           <div className="flex items-center gap-3 px-5 py-3">
             {mode === "search" ? (
               <Search className="w-5 h-5 text-[#e693bc]/50 shrink-0" />
@@ -298,28 +294,15 @@ export default function Home() {
               className="flex-1 bg-transparent text-[#f0e4ea] text-base placeholder:text-[#e693bc]/30 outline-none"
             />
             {query && !agent.running && (
-              <button
-                onClick={() => setQuery("")}
-                className="text-[#e693bc]/40 hover:text-[#fa0f83] text-sm transition-colors"
-              >
-                ✕
-              </button>
+              <button onClick={() => setQuery("")} className="text-[#e693bc]/40 hover:text-[#fa0f83] text-sm transition-colors">?</button>
             )}
             {agent.running && (
-              <button
-                onClick={agent.stopAgent}
-                className="text-red-400 hover:text-red-300 text-xs transition-colors"
-              >
-                Stop
-              </button>
+              <button onClick={agent.stopAgent} className="text-red-400 hover:text-red-300 text-xs transition-colors">Stop</button>
             )}
           </div>
         </div>
 
-        {/* Content Area */}
-        <div ref={listRef} className="flex-1 overflow-y-auto px-3 py-2 space-y-1 scrollbar-thin scrollbar-thumb-[#911150]/20">
-          
-          {/* ── Agent Mode ── */}
+        <div ref={listRef} className="flex-1 overflow-y-auto px-3 py-2 space-y-1">
           {mode === "agent" && (
             <div className="px-2 py-3 space-y-2">
               {!agent.connected && (
@@ -328,151 +311,198 @@ export default function Home() {
                   Connecting to ATLAS backend...
                 </div>
               )}
-              
               {agent.connected && !agent.running && agent.progress.length === 0 && !agent.result && (
                 <div className="text-[#e693bc]/40 text-sm text-center py-8">
                   Type a command and press Enter.<br />
                   <span className="text-[#e693bc]/25 text-xs">e.g. &ldquo;Open Notepad and type hello world&rdquo;</span>
                 </div>
               )}
-
-              {/* Progress Steps */}
               <AnimatePresence>
                 {agent.progress.map((p, i) => (
-                  <motion.div
-                    key={i}
-                    initial={{ opacity: 0, y: 8 }}
-                    animate={{ opacity: 1, y: 0 }}
-                    className="flex items-start gap-2 text-sm px-2 py-1.5"
-                  >
+                  <motion.div key={i} initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} className="flex items-start gap-2 text-sm px-2 py-1.5">
                     {p.status === "started" || p.status === "planning" || p.status === "executing" ? (
                       <Loader2 className="w-3.5 h-3.5 mt-0.5 text-[#fa0f83] animate-spin shrink-0" />
                     ) : p.status === "completed" ? (
                       <CheckCircle2 className="w-3.5 h-3.5 mt-0.5 text-green-400 shrink-0" />
-                    ) : p.status === "failed" || p.status === "retrying" ? (
+                    ) : p.status === "failed" ? (
                       <XCircle className="w-3.5 h-3.5 mt-0.5 text-red-400 shrink-0" />
                     ) : (
                       <ChevronRight className="w-3.5 h-3.5 mt-0.5 text-[#e693bc]/40 shrink-0" />
                     )}
                     <div>
-                      <span className="text-[#e693bc]/60 uppercase text-[10px] tracking-wider">{p.step}</span>
-                      <p className="text-[#f0e4ea]/80">{p.detail}</p>
+                      <span className="text-[#e693bc]/60 text-xs uppercase tracking-wide">{p.step}</span>
+                      {p.detail && <p className="text-[#f0e4ea]/70 text-xs mt-0.5">{p.detail}</p>}
                     </div>
                   </motion.div>
                 ))}
               </AnimatePresence>
-
-              {/* Final Result */}
               {agent.result && (
                 <motion.div
                   initial={{ opacity: 0, y: 8 }}
                   animate={{ opacity: 1, y: 0 }}
-                  className={`flex items-center gap-2 text-sm px-3 py-3 rounded-lg mt-2 ${
-                    agent.result.success
-                      ? "bg-green-400/10 text-green-300"
-                      : "bg-red-400/10 text-red-300"
+                  className={`flex items-center gap-2 px-3 py-3 rounded-lg text-sm mt-2 ${
+                    agent.result.success ? "bg-green-400/10 text-green-300" : "bg-red-400/10 text-red-300"
                   }`}
                 >
-                  {agent.result.success ? (
-                    <CheckCircle2 className="w-4 h-4 shrink-0" />
-                  ) : (
-                    <XCircle className="w-4 h-4 shrink-0" />
-                  )}
-                  {agent.result.detail || (agent.result.success ? "Done!" : "Failed")}
+                  {agent.result.success ? <CheckCircle2 className="w-4 h-4 shrink-0" /> : <XCircle className="w-4 h-4 shrink-0" />}
+                  {agent.result.detail || (agent.result.success ? "Task completed" : "Task failed")}
                 </motion.div>
               )}
             </div>
           )}
 
-          {/* ── Search Mode ── */}
           {mode === "search" && (
             <>
-              {loading ? (
-                <div className="flex items-center justify-center h-32">
-                  <div className="text-[#e693bc]/50 text-sm">Indexing files...</div>
+              {loading && (
+                <div className="text-[#e693bc]/30 text-sm text-center py-8">
+                  <Loader2 className="w-5 h-5 animate-spin mx-auto mb-2" />
+                  Loading...
                 </div>
-              ) : displayItems.length === 0 ? (
-                <div className="flex flex-col items-center justify-center h-32 gap-2">
-                  <div className="text-[#e693bc]/50 text-sm">No results found</div>
-                  {agent.connected && query.trim() && (
-                    <button
-                      onClick={() => setMode("agent")}
-                      className="text-[#fa0f83]/60 hover:text-[#fa0f83] text-xs transition-colors"
-                    >
-                      Try as agent command →
-                    </button>
-                  )}
-                </div>
-              ) : (
-                <>
-                  {apps.length > 0 && (
-                    <div className="px-2 pt-2 pb-1">
-                      <span className="text-[11px] font-medium text-[#e693bc]/40 uppercase tracking-wider">
-                        Applications
-                      </span>
-                    </div>
-                  )}
-                  {apps.map((item) => {
-                    globalIndex++;
-                    const idx = globalIndex;
-                    return (
-                      <button
-                        key={`app-${item.path}`}
-                        onClick={() => openItem(item)}
-                        className={`w-full flex items-center gap-3 px-4 py-2.5 rounded-xl text-left transition-all duration-150 ${
-                          selectedIndex === idx
-                            ? "bg-[#911150]/30 text-[#f0e4ea]"
-                            : "text-[#e693bc]/70 hover:bg-[#911150]/15 hover:text-[#f0e4ea]"
-                        }`}
-                      >
-                        <span className="text-lg shrink-0">{item.icon}</span>
-                        <div className="flex-1 min-w-0">
-                          <div className="text-sm font-medium truncate">{item.name}</div>
-                        </div>
-                        <span className="text-[10px] text-[#fa0f83]/40 uppercase tracking-wider shrink-0">
-                          {item.kind}
-                        </span>
-                      </button>
-                    );
-                  })}
-
-                  {files.length > 0 && (
-                    <div className="px-2 pt-3 pb-1">
-                      <span className="text-[11px] font-medium text-[#e693bc]/40 uppercase tracking-wider">
-                        Files
-                      </span>
-                    </div>
-                  )}
-                  {files.map((item) => {
-                    globalIndex++;
-                    const idx = globalIndex;
-                    return (
-                      <button
-                        key={`file-${item.path}`}
-                        onClick={() => openItem(item)}
-                        className={`w-full flex items-center gap-3 px-4 py-2.5 rounded-xl text-left transition-all duration-150 ${
-                          selectedIndex === idx
-                            ? "bg-[#911150]/30 text-[#f0e4ea]"
-                            : "text-[#e693bc]/70 hover:bg-[#911150]/15 hover:text-[#f0e4ea]"
-                        }`}
-                      >
-                        <span className="text-lg shrink-0">{item.icon}</span>
-                        <div className="flex-1 min-w-0">
-                          <div className="text-sm font-medium truncate">{item.name}</div>
-                          <div className="text-[11px] text-[#e693bc]/25 truncate">{item.path}</div>
-                        </div>
-                        <span className="text-[10px] text-[#fa0f83]/40 uppercase tracking-wider shrink-0">
-                          {item.kind}
-                        </span>
-                      </button>
-                    );
-                  })}
-                </>
               )}
+              {!loading && displayItems.length === 0 && query && (
+                <div className="text-[#e693bc]/30 text-sm text-center py-8">No results for &ldquo;{query}&rdquo;</div>
+              )}
+              {displayItems.map((item) => {
+                globalIndex++;
+                const idx = globalIndex;
+                const isSelected = idx === selectedIndex;
+                return (
+                  <motion.div
+                    key={item.path}
+                    initial={false}
+                    animate={{ backgroundColor: isSelected ? "rgba(145,17,80,0.25)" : "transparent" }}
+                    transition={{ duration: 0.1 }}
+                    className="flex items-center gap-3 px-3 py-2.5 rounded-xl cursor-pointer group"
+                    onClick={() => openItem(item)}
+                  >
+                    <span className="text-lg leading-none">{item.icon}</span>
+                    <div className="flex-1 min-w-0">
+                      <p className="text-[#f0e4ea] text-sm truncate">{item.name}</p>
+                      <p className="text-[#e693bc]/30 text-xs truncate">{item.path}</p>
+                    </div>
+                    <span className="text-[#e693bc]/20 text-xs group-hover:text-[#e693bc]/50 transition-colors capitalize">{item.kind}</span>
+                  </motion.div>
+                );
+              })}
             </>
           )}
         </div>
       </div>
     </motion.div>
+  );
+}
+
+// Super Turbo (Griffin) View
+function TurboView() {
+  const [activeView, setActiveView] = useState<TurboView>("canvas");
+  const [settingsOpen, setSettingsOpen] = useState(false);
+  const connect = useOrchestratorStore((s) => s.connect);
+  const connected = useOrchestratorStore((s) => s.connected);
+
+  useEffect(() => {
+    if (!connected) {
+      connect(GRIFFIN_WS_URL);
+    }
+  }, [connect, connected]);
+
+  const viewComponents: Record<TurboView, React.ComponentType<any>> = {
+    canvas: BlueprintCanvas,
+    chat: ChatPage,
+    terminal: GodModeTerminal,
+    workstation: Workstation,
+    cost: CostDashboard,
+    multiverse: () => (
+      <MultiverseScene
+        isOpen={true}
+        onClose={() => {}}
+        onSelectUniverse={(_universe: any, _index: number) => {
+          setTimeout(() => setActiveView("canvas"), 100);
+        }}
+      />
+    ),
+  };
+
+  const ActiveComponent = viewComponents[activeView];
+
+  return (
+    <div className="turbo-mode h-screen w-full bg-background overflow-hidden">
+      <GriffinNavbar
+        activeView={activeView}
+        onViewChange={(v) => setActiveView(v as TurboView)}
+        onSettingsClick={() => setSettingsOpen(true)}
+      />
+      <SettingsDialog open={settingsOpen} onOpenChange={setSettingsOpen} />
+
+      <div className="relative h-full w-full overflow-hidden pb-[68px] pt-12">
+        <div
+          className="absolute inset-0 w-full h-full"
+          style={{
+            opacity: activeView === "multiverse" ? 1 : 0,
+            pointerEvents: activeView === "multiverse" ? "auto" : "none",
+            zIndex: activeView === "multiverse" ? 10 : 0,
+          }}
+        >
+          <MultiverseScene
+            isOpen={true}
+            onClose={() => {}}
+            onSelectUniverse={(_universe: any, _index: number) => {
+              setTimeout(() => setActiveView("canvas"), 100);
+            }}
+          />
+        </div>
+
+        {activeView !== "multiverse" && (
+          <AnimatePresence mode="wait">
+            <motion.div
+              key={activeView}
+              initial={{ opacity: 0, scale: 0.95 }}
+              animate={{ opacity: 1, scale: 1 }}
+              exit={{ opacity: 0, scale: 1.05 }}
+              transition={{ duration: 0.3, ease: [0.4, 0, 0.2, 1] }}
+              className="relative h-full w-full"
+              style={{ zIndex: 20 }}
+            >
+              <ActiveComponent />
+            </motion.div>
+          </AnimatePresence>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// Root
+export default function Home() {
+  const [appMode, setAppMode] = useState<AppMode>("atlas");
+
+  return (
+    <>
+      <ModeSwitcher mode={appMode} onChange={setAppMode} />
+      <AnimatePresence mode="wait">
+        {appMode === "atlas" ? (
+          <motion.div
+            key="atlas"
+            initial={{ opacity: 0, y: -12 }}
+            animate={{ opacity: 1, y: 0 }}
+            exit={{ opacity: 0, y: 12 }}
+            transition={{ duration: 0.25 }}
+            className="h-screen w-full"
+          >
+            <AtlasView />
+          </motion.div>
+        ) : (
+          <motion.div
+            key="turbo"
+            initial={{ opacity: 0, y: 12 }}
+            animate={{ opacity: 1, y: 0 }}
+            exit={{ opacity: 0, y: -12 }}
+            transition={{ duration: 0.25 }}
+            className="h-screen w-full"
+          >
+            <TurboView />
+          </motion.div>
+        )}
+      </AnimatePresence>
+    </>
   );
 }

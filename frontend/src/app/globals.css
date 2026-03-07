@@ -115,6 +115,60 @@
   --sidebar-ring: oklch(0.556 0 0);
 }
 
+/* ── Griffin / Super Turbo theme vars ─────────────────────────── */
+.turbo-mode {
+  --background: #0c0508;
+  --foreground: #f0e4ea;
+  --card: #1a0f14;
+  --card-foreground: #f0e4ea;
+  --popover: #221622;
+  --popover-foreground: #f0e4ea;
+  --primary: #e693bc;
+  --primary-foreground: #0c0508;
+  --secondary: #911150;
+  --secondary-foreground: #f0e4ea;
+  --muted: #2d1a26;
+  --muted-foreground: #b48fa3;
+  --accent: #fa0f83;
+  --accent-foreground: #f0e4ea;
+  --destructive: #ff3366;
+  --border: #4a2842;
+  --input: #4a2842;
+  --ring: #e693bc;
+  --chart-1: #fa0f83;
+  --chart-2: #e693bc;
+  --chart-3: #911150;
+  --chart-4: #6b0d3d;
+  --chart-5: #3d0822;
+  --sidebar: #0c0508;
+  --sidebar-foreground: #f0e4ea;
+  --sidebar-primary: #e693bc;
+  --sidebar-primary-foreground: #0c0508;
+  --sidebar-accent: #911150;
+  --sidebar-accent-foreground: #f0e4ea;
+  --sidebar-border: #4a2842;
+  --sidebar-ring: #e693bc;
+}
+
+/* React Flow */
+.react-flow__attribution,
+.react-flow__controls,
+.react-flow__panel.bottom {
+  display: none !important;
+}
+
+/* Hide all scrollbars globally */
+* {
+  -ms-overflow-style: none !important;
+  scrollbar-width: none !important;
+}
+*::-webkit-scrollbar {
+  display: none !important;
+  width: 0 !important;
+  height: 0 !important;
+  background: transparent !important;
+}
+
 @layer base {
   * {
     @apply border-border outline-ring/50;
