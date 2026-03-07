@@ -1,3 +1,125 @@
+# ATLAS — Running Guide
+
+## Prerequisites
+
+- **Python 3.10+** with `pip` (system Python, not the venv)
+- **Node.js 18+** and `npm`
+- **Flutter SDK** (`flutter` on PATH)
+- **Android Debug Bridge** (`adb` on PATH, bundled with Android Studio / Platform Tools)
+- A **Gemini API key** (free tier works)
+
+---
+
+## 1. Environment Setup (one-time)
+
+Create a `.env` file in `ATLAS/`:
+
+```
+GEMINI_API_KEY=your_key_here
+```
+
+Install Python backend dependencies:
+
+```powershell
+pip install fastapi "uvicorn[standard]" websockets python-dotenv loguru pydantic
+```
+
+Install frontend dependencies:
+
+```powershell
+cd ATLAS/frontend
+npm install
+```
+
+Install Flutter app dependencies:
+
+```powershell
+cd ATLAS/companion-app/companion_app
+flutter pub get
+```
+
+---
+
+## 2. Running the Backend
+
+Open a terminal and run:
+
+```powershell
+cd ATLAS/backend
+python -m uvicorn server:app --host 0.0.0.0 --port 8000 --reload
+```
+
+Wait for: `Agent initialized and ready` — the backend is up at `http://localhost:8000`.
+
+---
+
+## 3. Running the Frontend
+
+Open a **second** terminal:
+
+```powershell
+cd ATLAS/frontend
+npm run dev
+```
+
+Open `http://localhost:3000` in your browser.
+
+---
+
+## 4. Running the Flutter Companion App (Android phone via USB)
+
+**Step 1** — Connect your phone via USB and enable USB Debugging.
+
+**Step 2** — Verify the device is detected:
+
+```powershell
+adb devices
+```
+
+You should see your device listed as `device` (not `unauthorized`).
+
+**Step 3** — Set up USB tunnel so the phone can reach the backend:
+
+```powershell
+adb reverse tcp:8000 tcp:8000
+```
+
+**Step 4** — Build and install the app:
+
+```powershell
+cd ATLAS/companion-app/companion_app
+flutter run -d <device-id>
+```
+
+Replace `<device-id>` with the ID from `adb devices` (e.g. `ffd09d25`).
+
+**Step 5** — On your phone, the app opens a connection screen.  
+Enter:
+- **IP**: `127.0.0.1`
+- **Port**: `8000`
+
+Tap **Connect**. The USB tunnel routes traffic directly to your PC — no Wi-Fi needed.
+
+> **Note:** The Android build outputs to `C:\ATLAS_BUILD\` (a workaround for a Gradle path-with-spaces bug). The `build.gradle.kts` copies the APK back to where Flutter expects it automatically.
+
+---
+
+## 5. Verifying Everything Works
+
+- Backend health check: `http://localhost:8000/health` → `{"status": "ok", "agent_ready": true}`
+- Frontend: `http://localhost:3000` loads the desktop UI
+- Companion app: shows **Connected** status after tapping Connect
+
+---
+
+## 6. Restarting After a Reboot
+
+Each session you need to re-run steps 2–4. The USB tunnel (`adb reverse`) resets when you unplug the cable, so re-run that command each time.
+
+---
+
+---
+
 📄 Product Requirements Document (PRD)
 Project Name
 
