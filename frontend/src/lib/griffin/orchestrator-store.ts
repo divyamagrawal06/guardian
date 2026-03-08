@@ -95,6 +95,7 @@ interface Envelope<TPayload = unknown> {
 interface OrchestratorState {
   wrappers: Record<string, WrapperInfo>;
   connected: boolean;
+  pipelineRunning: boolean;
   chatMessages: ChatMessage[];
   agentMessages: ChatMessage[];
   terminalLogs: string[];
@@ -198,6 +199,7 @@ function _recomputeCostSummary(log: TokenUsageEntry[]): CostSummary {
 export const useOrchestratorStore = create<OrchestratorState>((set, get) => ({
   wrappers: {},
   connected: false,
+  pipelineRunning: false,
   chatMessages: [],
   agentMessages: [],
   terminalLogs: [],
@@ -359,6 +361,7 @@ export const useOrchestratorStore = create<OrchestratorState>((set, get) => ({
               },
             ],
             terminalLogs: [...state.terminalLogs, msg.data], // Keep original in terminal
+            pipelineRunning: true,
           }));
         }
 
@@ -406,6 +409,34 @@ export const useOrchestratorStore = create<OrchestratorState>((set, get) => ({
           }));
         }
 
+        // Handle generated code artifacts (sent after pipeline completes)
+        if (msg.type === 'code_artifact') {
+          const d = (msg as any).data as {
+            id: string; filename: string; filepath: string;
+            language: string; code: string; progress: number; status: string;
+          };
+          if (d?.code) {
+            set((state) => {
+              const newArtifact: CodeArtifact = {
+                id: d.id ?? `art-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+                filename: d.filename,
+                language: d.language,
+                code: d.code,
+                type: 'file',
+                wrapper: 'griffin',
+                agent: 'ML Pipeline',
+                timestamp: new Date(),
+                status: 'complete',
+                progress: 100,
+              };
+              return {
+                artifacts: [...state.artifacts, newArtifact],
+                activeArtifactId: state.activeArtifactId ?? newArtifact.id,
+              };
+            });
+          }
+        }
+
         // Handle completion
         if (msg.type === 'complete') {
           const files = (msg as any).files as string[] | undefined;
@@ -424,6 +455,7 @@ export const useOrchestratorStore = create<OrchestratorState>((set, get) => ({
             projectGithubUrl: msg.githubUrl || null,
             projectName: msg.projectName || null,
             projectFiles: files || state.projectFiles,
+            pipelineRunning: false,
           }));
         }
 
@@ -441,6 +473,7 @@ export const useOrchestratorStore = create<OrchestratorState>((set, get) => ({
                 isUser: false,
               },
             ],
+            pipelineRunning: false,
           }));
         }
       });
