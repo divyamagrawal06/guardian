@@ -1,4 +1,4 @@
-# ATLAS — Running Guide
+# Guardian — Running Guide
 
 ## Prerequisites
 
