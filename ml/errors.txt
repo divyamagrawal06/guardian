@@ -1,0 +1,120 @@
+================================================================================
+                    ATLAS ML PIPELINE - IDENTIFIED ISSUES
+                    Generated: 2026-02-09
+================================================================================
+
+This file tracks known gaps and issues in the pipeline design.
+Work on these after the core architecture is functional.
+
+--------------------------------------------------------------------------------
+CRITICAL ISSUES (Hampers Pipeline Flow - Must Fix for Core Functionality)
+--------------------------------------------------------------------------------
+
+[CRITICAL-001] DPI/Scaling Handling Underspecified
+- Location: Step 8 (Coordinate Resolution)
+- Problem: "Apply DPI calibration if required" has no concrete implementation.
+  Windows has per-monitor DPI scaling, virtual desktops, and high-DPI modes.
+  Screenshots from different libraries return different resolutions.
+- Impact: Coordinates WILL be wrong on scaled displays, clicks will miss targets.
+- Fix: Define a DPI detection module that runs at startup and validates 
+  coordinate transformations. Test on 100%, 125%, 150%, 200% scaling.
+
+[CRITICAL-002] Modal/Dialog Handling Missing
+- Location: Between Step 3 and Step 4
+- Problem: No handling for unexpected dialogs (Update prompts, Save dialogs, 
+  Permission requests, Error popups).
+- Impact: Pipeline will break when ANY unexpected modal appears.
+- Fix: Add modal detection step that checks for blocking overlays before
+  proceeding. Common patterns: centered rectangles, dimmed backgrounds.
+
+[CRITICAL-003] App Window State Not Tracked
+- Location: Before Step 3 (Screen Capture)
+- Problem: Pipeline doesn't verify if target app is:
+  - Actually running
+  - Minimized
+  - Behind other windows  
+  - On different virtual desktop
+- Impact: Screen capture will show wrong content, all subsequent steps fail.
+- Fix: Add window state detection using win32gui or similar. Implement
+  bring-to-front logic before capture.
+
+[CRITICAL-004] Multi-Monitor Support Not Addressed
+- Location: Step 3 (Screen Capture)
+- Problem: Pipeline assumes single screen. No logic for:
+  - Which monitor contains target app
+  - Coordinate transformation across monitors
+  - Capturing the correct screen
+- Impact: On multi-monitor setups, everything breaks.
+- Fix: Detect monitor layout, identify which monitor has target app,
+  adjust coordinate frame accordingly.
+
+--------------------------------------------------------------------------------
+NON-CRITICAL ISSUES (Pipeline Can Function - Fix for Robustness)
+--------------------------------------------------------------------------------
+
+[NON-CRIT-001] No Error Classification Taxonomy
+- Location: Step 10 (Visual Verification)
+- Problem: No differentiation between error types:
+  - Perception failure (OCR/VLM missed element)
+  - Execution failure (click landed wrong)
+  - State failure (app crashed, unexpected state)
+  - Task failure (feature doesn't exist)
+- Impact: Recovery strategies are generic, not optimized per error type.
+- Fix: Add error classification layer that routes to appropriate recovery.
+
+[NON-CRIT-002] Typing Speed & Input Buffering
+- Location: Step 9 (Action Execution)  
+- Problem: No handling for:
+  - Apps that drop fast keystrokes
+  - Special characters (unicode, emojis)
+  - Input fields with processing delay
+- Impact: Text may be garbled or incomplete in some apps.
+- Fix: Configurable typing speed, character-by-character verification option.
+
+[NON-CRIT-003] Context Switching Between Apps
+- Location: Step 7 (Action Planning)
+- Problem: No support for multi-app workflows like:
+  "Copy from Chrome, paste into Word"
+- Impact: Single-app tasks work, multi-app fails.
+- Fix: Add app focus/switch primitive, maintain per-app state.
+
+[NON-CRIT-004] VLM Latency May Break Loop Timing
+- Location: Step 5 (VLM UI Region Detection)
+- Problem: LLaVA can take 2-10s per inference. Every loop waits for VLM.
+- Impact: Agent feels slow and unresponsive.
+- Fix: Cache VLM results for static screens, run VLM async,
+  skip VLM if OCR provides high-confidence candidates.
+
+[NON-CRIT-005] No Fallback for Inaccessible UI Elements
+- Location: Step 4-6 (Perception)
+- Problem: Some UI uses custom fonts, embedded images, or icons with no text.
+- Impact: Elements may be invisible to OCR.
+- Fix: Icon template matching, VLM-based icon recognition as fallback.
+
+[NON-CRIT-006] Memory Persistence Format Unspecified
+- Location: Section 4 (Memory)
+- Problem: No defined format for:
+  - Storage (JSON? SQLite?)
+  - Data schema
+  - Eviction/cleanup policy
+- Impact: Memory feature won't work until defined.
+- Fix: Define schema, use SQLite for persistence, JSON for export.
+
+--------------------------------------------------------------------------------
+RESOLUTION TRACKING
+--------------------------------------------------------------------------------
+
+Issue ID        | Status      | Fixed In    | Notes
+----------------|-------------|-------------|--------------------------------
+CRITICAL-001    | OPEN        |             |
+CRITICAL-002    | OPEN        |             |
+CRITICAL-003    | OPEN        |             |
+CRITICAL-004    | OPEN        |             |
+NON-CRIT-001    | OPEN        |             |
+NON-CRIT-002    | OPEN        |             |
+NON-CRIT-003    | OPEN        |             |
+NON-CRIT-004    | OPEN        |             |
+NON-CRIT-005    | OPEN        |             |
+NON-CRIT-006    | OPEN        |             |
+
+================================================================================
